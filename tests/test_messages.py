@@ -131,3 +131,37 @@ def test_format_qty(val, exp):
 
 def test_format_qty_garbage_passthrough():
     assert onec._format_qty("n/a") == "n/a"
+
+
+def test_at_warehouse_message_single_item():
+    items = [
+        {"name": "Молоко 3.2%", "article": "Арт-1", "unit": "шт", "quantity": 20, "warehouses": []}
+    ]
+    m = onec._build_at_warehouse_message(items, "молоко", "Центральный склад")
+    assert m == "Молоко 3.2% (арт. Арт-1) на складе 'Центральный склад': 20 шт."
+
+
+def test_at_warehouse_message_multi_same_unit():
+    items = [
+        {
+            "name": "Молоко Домик 1.5%",
+            "article": "A",
+            "unit": "шт",
+            "quantity": 20,
+            "warehouses": [],
+        },
+        {
+            "name": "Молоко Домик 3.2%",
+            "article": "B",
+            "unit": "шт",
+            "quantity": 20,
+            "warehouses": [],
+        },
+    ]
+    m = onec._build_at_warehouse_message(items, "молоко", "Центральный склад")
+    assert m.startswith("Остаток 'молоко' на складе 'Центральный склад': 40 шт (2 позиции")
+
+
+def test_at_warehouse_message_not_found():
+    m = onec._build_at_warehouse_message([], "молоко", "Такого склада нет")
+    assert "не найден" in m and "Такого склада нет" in m

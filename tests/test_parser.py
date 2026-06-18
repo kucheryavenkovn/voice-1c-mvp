@@ -84,3 +84,15 @@ def test_build_query_no_injection():
     q = onec._build_query(raw)
     like = onec._like_pattern(safe)  # only our own %...% wildcards
     assert q.count('ВРЕГ("' + like + '")') == 2
+
+
+def test_build_query_with_warehouse_filter():
+    q = onec._build_query("молоко", "центральный склад")
+    assert "Склад.Наименование" in q
+    assert 'ВРЕГ("%центральный%склад%")' in q  # lemmatized + wildcard
+    assert q.count("И") >= 2  # item-cond AND warehouse-cond
+
+
+def test_build_query_without_warehouse_has_no_warehouse_filter():
+    q = onec._build_query("молоко")
+    assert "Склад.Наименование) ПОДОБНО" not in q

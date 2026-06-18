@@ -42,13 +42,18 @@ SYSTEM_PROMPT = (
     "в том числе когда артикул назван без слова «артикул» — просто цифрами/кодом. "
     "Передавай код как есть, цифры сохраняй цифрами. "
     "Название приведи к именительному падежу единственного числа "
-    "(телевизоры→телевизор, стулья→стул, молока→молоко).\n"
+    "(телевизоры→телевизор, стулья→стул, молока→молоко). "
+    "Если пользователь назвал конкретный СКЛАД ('на центральном складе', 'на складе X') "
+    '— добавь поле "warehouse": "<склад>"; если склад не назван — "warehouse": null.\n'
     "3) В остальных случаях верни:\n"
-    '{"action": "unknown", "item": null}\n'
-    'Примеры: \'сколько молока?\' -> {"action":"get_stock","item":"молоко"}; '
+    '{"action": "unknown", "item": null, "warehouse": null}\n'
+    "Примеры: 'сколько молока?' -> "
+    '{"action":"get_stock","item":"молоко","warehouse":null}; '
+    "'сколько молока на центральном складе' -> "
+    '{"action":"get_stock","item":"молоко","warehouse":"центральный склад"}; '
     "'по каким товарам с названием сахар есть остатки' -> "
-    '{"action":"list_stock","item":"сахар"}; '
-    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777"}.'
+    '{"action":"list_stock","item":"сахар","warehouse":null}; '
+    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777","warehouse":null}.'
 )
 
 HERE = pathlib.Path(__file__).parent
@@ -131,14 +136,13 @@ def lm_intent(text: str) -> tuple[dict | None, str]:
     return extract_json(content), content
 
 
-def call_stock_api(item: str) -> dict:
-    """Получить остатки товара. Источник определяется STOCK_BACKEND:
-    '1c' — 1C MCP Toolkit (REST /api/execute_query), 'mock' — заглушка mock-api.
-    При STOCK_FALLBACK_TO_MOCK=true и ошибке 1С — откат на mock.
-    """
+def call_stock_api(item: str, warehouse: str | None = None) -> dict:
+    """Получить остатки товара (опц. на конкретном складе). Источник определяется
+    STOCK_BACKEND: '1c' — 1C MCP Toolkit (REST), 'mock' — заглушка mock-api.
+    При STOCK_FALLBACK_TO_MOCK=true и ошибке 1С — откат на mock."""
     if STOCK_BACKEND == "1c":
         try:
-            return onec.query_stock(item)
+            return onec.query_stock(item, warehouse)
         except Exception as e:
             print(f"[gateway] 1C stock failed: {e}", flush=True)
             if STOCK_FALLBACK_TO_MOCK:
@@ -149,6 +153,7 @@ def call_stock_api(item: str) -> dict:
                 "item": item,
                 "found": False,
                 "quantity": None,
+                "items": [],
                 "warehouses": [],
                 "message": f"Не удалось получить остаток из 1С: {e}",
                 "source": "1c",
@@ -170,7 +175,7 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     if action in ("get_stock", "list_stock"):
         if action == "list_stock":
             if stock and stock.get("items") is not None:
-                return onec._build_list_message(stock["items"], item)
+                return onec._build_list_message(stock["items"], item, stock.get("warehouse"))
             return (stock or {}).get("message") or f"По '{item}' товаров с остатком нет."
         if stock and stock.get("found"):
             return stock.get("message") or f"Остаток: {stock.get('quantity')} штук."
@@ -186,10 +191,11 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
 
     stock = None
     item = (intent or {}).get("item")
+    warehouse = (intent or {}).get("warehouse")
     if (intent or {}).get("action") in ("get_stock", "list_stock") and item:
         t_stock = metrics.ms()
         try:
-            stock = call_stock_api(item)
+            stock = call_stock_api(item, warehouse)
         except Exception as e:
             stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
         stock_ms = metrics.ms() - t_stock
@@ -218,6 +224,7 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
         "tts_ms": tts_ms,
         "stock_src": (stock or {}).get("source") if stock else None,
         "item": item,
+        "warehouse": warehouse,
         "found": (stock or {}).get("found") if stock else None,
         "items": len((stock or {}).get("items", [])) if stock else 0,
         "answer_len": len(answer),

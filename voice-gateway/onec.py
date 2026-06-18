@@ -82,8 +82,20 @@ def _like_pattern(safe: str) -> str:
     return "%" + "%".join(tokens) + "%"
 
 
-def _build_query(item: str) -> str:
+def _build_query(item: str, warehouse: str | None = None) -> str:
     like = _like_pattern(_lemmatize(_sanitize(item)))
+    conds = [
+        "ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0",
+        '(ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Наименование) ПОДОБНО ВРЕГ("'
+        + like
+        + '") ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("'
+        + like
+        + '"))',
+    ]
+    if warehouse:
+        wh = _like_pattern(_lemmatize(_sanitize(warehouse)))
+        conds.append('ВРЕГ(ТоварыНаСкладахОстатки.Склад.Наименование) ПОДОБНО ВРЕГ("' + wh + '")')
+    where = "\n  И ".join(conds)
     return (
         "ВЫБРАТЬ\n"
         "  ТоварыНаСкладахОстатки.Склад.Наименование КАК Склад,\n"
@@ -92,9 +104,7 @@ def _build_query(item: str) -> str:
         "  ТоварыНаСкладахОстатки.Номенклатура.ЕдиницаИзмерения.Наименование КАК Ед,\n"
         "  СУММА(ТоварыНаСкладахОстатки.ВНаличииОстаток) КАК Остаток\n"
         "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК ТоварыНаСкладахОстатки\n"
-        "ГДЕ ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0\n"
-        '  И (ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Наименование) ПОДОБНО ВРЕГ("' + like + '")\n'
-        '   ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("' + like + '"))\n'
+        "ГДЕ " + where + "\n"
         "СГРУППИРОВАТЬ ПО ТоварыНаСкладахОстатки.Склад.Наименование,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Наименование,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Артикул,\n"
@@ -260,11 +270,12 @@ def _build_message(items: list, user_item: str) -> str:
     return f"Остаток по '{user_item}': {total_str}. По складам: {wh_str}{extra}."
 
 
-def _build_list_message(items: list, user_item: str) -> str:
+def _build_list_message(items: list, user_item: str, wh_name: str | None = None) -> str:
     """Enumerate which items matching the query have stock (name + article + qty + unit).
     For 'по каким товарам с наименованием сахар есть остатки'."""
     if not items:
-        return f"По '{user_item}' товаров с остатком нет."
+        where = f" на складе '{wh_name}'" if wh_name else ""
+        return f"По '{user_item}'{where} товаров с остатком нет."
     cap = 6
     parts = []
     for it in items[:cap]:
@@ -278,14 +289,47 @@ def _build_list_message(items: list, user_item: str) -> str:
         extra = f"; и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
     n = len(items)
     pos = _plural(n, "позиция", "позиции", "позиций")
-    return f"Товары с остатком по '{user_item}' ({n} {pos}): {s}{extra}."
+    at = f" на складе '{wh_name}'" if wh_name else ""
+    return f"Товары с остатком по '{user_item}'{at} ({n} {pos}): {s}{extra}."
 
 
-def query_stock(item: str) -> dict:
-    """Вернуть остатки товара по складам из 1С.
+def _unit_totals(items: list) -> dict:
+    totals: dict[str, float] = {}
+    for it in items:
+        u = _unit_of(it)
+        totals[u] = totals.get(u, 0) + it["quantity"]
+    return totals
+
+
+def _totals_phrase(items: list) -> str:
+    """'100 шт' (same unit) or '10 кг + 7 шт' (mixed)."""
+    totals = _unit_totals(items)
+    units = [u for u in totals if u]
+    if len(units) <= 1:
+        u = units[0] if units else ""
+        return f"{_format_qty(sum(it['quantity'] for it in items))}{(' ' + u) if u else ''}"
+    return " + ".join(f"{_format_qty(totals[u])} {u}" for u in units)
+
+
+def _build_at_warehouse_message(items: list, user_item: str, wh_name: str) -> str:
+    """Stock of an item at a specific warehouse ('сколько молока на центральном складе')."""
+    if not items:
+        return f"На складе '{wh_name}' товар '{user_item}' не найден."
+    total = _totals_phrase(items)
+    n = len(items)
+    if n == 1:
+        it = items[0]
+        a = f" (арт. {it['article']})" if it.get("article") else ""
+        return f"{it['name']}{a} на складе '{wh_name}': {total}."
+    pos = _plural(n, "позиция", "позиции", "позиций")
+    return f"Остаток '{user_item}' на складе '{wh_name}': {total} ({n} {pos})."
+
+
+def query_stock(item: str, warehouse: str | None = None) -> dict:
+    """Вернуть остатки товара из 1С (опционально на конкретном складе).
 
     Возвращает словарь, совместимый с контрактом mock-api:
-      {item, found, quantity, warehouses:[{name,quantity}], message, source}
+      {item, found, quantity, warehouses:[{name,quantity}], message, source, warehouse?}
     """
     if not _sanitize(item):
         return {
@@ -301,7 +345,7 @@ def query_stock(item: str) -> dict:
     url = ONEC_BASE_URL.rstrip("/") + "/execute_query"
     if ONEC_CHANNEL:
         url += f"?channel={ONEC_CHANNEL}"
-    payload = {"query": _build_query(item), "limit": 50}
+    payload = {"query": _build_query(item, warehouse), "limit": 50}
 
     r = requests.post(url, json=payload, timeout=ONEC_TIMEOUT)
     r.raise_for_status()
@@ -330,13 +374,14 @@ def query_stock(item: str) -> dict:
         it["wh"][wname] = it["wh"].get(wname, 0) + qty
 
     if not items_map:
+        where = f" на складе '{warehouse}'" if warehouse else ""
         return {
             "item": item,
             "found": False,
             "quantity": None,
             "items": [],
             "warehouses": [],
-            "message": f"Товар '{item}' не найден в остатках 1С.",
+            "message": f"Товар '{item}'{where} не найден в остатках 1С.",
             "source": "1c",
         }
 
@@ -359,6 +404,15 @@ def query_stock(item: str) -> dict:
         )
     items.sort(key=lambda x: x["quantity"], reverse=True)
 
+    # actual warehouse name from data (user may have said a partial name)
+    wh_name = None
+    if warehouse and items:
+        for it in items:
+            if it["warehouses"]:
+                wh_name = it["warehouses"][0]["name"]
+                break
+        wh_name = wh_name or warehouse
+
     single = len(items) == 1
     qty_top = items[0]["quantity"] if single else None
 
@@ -374,15 +428,23 @@ def query_stock(item: str) -> dict:
         reverse=True,
     )
 
-    return {
+    if wh_name:
+        message = _build_at_warehouse_message(items, item, wh_name)
+    else:
+        message = _build_message(items, item)
+
+    result = {
         "item": item,
         "found": True,
         "quantity": qty_top,
         "items": items,
         "warehouses": warehouses_all,
-        "message": _build_message(items, item),
+        "message": message,
         "source": "1c",
     }
+    if wh_name:
+        result["warehouse"] = wh_name
+    return result
 
 
 def ping() -> bool:
