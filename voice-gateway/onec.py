@@ -34,17 +34,22 @@ def _sanitize(item: str) -> str:
 
 
 def _build_query(item: str) -> str:
-    safe = _sanitize(item).replace('"', "")
+    safe = _sanitize(item).replace('"', "").replace("%", "")
     return (
         "ВЫБРАТЬ\n"
         "  ТоварыНаСкладахОстатки.Склад.Наименование КАК Склад,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.Наименование КАК Товар,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.Артикул КАК Артикул,\n"
         "  СУММА(ТоварыНаСкладахОстатки.ВНаличииОстаток) КАК Остаток\n"
         "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК ТоварыНаСкладахОстатки\n"
         'ГДЕ ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0\n'
-        '  И ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Наименование) ПОДОБНО ВРЕГ("%'
-        + safe
-        + '%")\n'
-        "СГРУППИРОВАТЬ ПО ТоварыНаСкладахОстатки.Склад.Наименование\n"
+        '  И (ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Наименование) ПОДОБНО ВРЕГ("%'
+        + safe + '%")\n'
+        '   ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("%'
+        + safe + '%"))\n'
+        "СГРУППИРОВАТЬ ПО ТоварыНаСкладахОстатки.Склад.Наименование,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.Наименование,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.Артикул\n"
         "УПОРЯДОЧИТЬ ПО Остаток УБЫВ"
     )
 
@@ -121,7 +126,10 @@ def _parse_table(data: str) -> tuple[list, list]:
 
 def _format_qty(v) -> str:
     try:
-        return str(int(v))
+        f = float(v)
+        if abs(f - round(f)) < 1e-9:
+            return str(int(round(f)))
+        return f"{f:.2f}".rstrip("0").rstrip(".")
     except Exception:
         return str(v)
 
@@ -136,19 +144,36 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def _build_message(item: str, total, warehouses: list) -> str:
-    top = warehouses[:4]
-    parts = [f"{w['name']} {_format_qty(w['quantity'])}" for w in top]
-    wh = ", ".join(parts)
+def _build_message(items: list, user_item: str) -> str:
+    """Voice-friendly summary. One item → total + per-warehouse; many → per-item
+    totals (units may differ across items, so no cross-item sum)."""
+    def art_full(it):
+        return f" (арт. {it['article']})" if it.get("article") else ""
+
+    if len(items) == 1:
+        it = items[0]
+        top = it["warehouses"][:4]
+        wh = ", ".join(f"{w['name']} {_format_qty(w['quantity'])}" for w in top)
+        extra = ""
+        if len(it["warehouses"]) > 4:
+            r = len(it["warehouses"]) - 4
+            extra = f", и ещё на {r} {_plural(r, 'складе', 'складах', 'складах')}"
+        unit = _plural(it["quantity"], "единица", "единицы", "единиц")
+        return (
+            f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])} {unit}. "
+            f"По складам: {wh}{extra}."
+        )
+
+    parts = []
+    for it in items[:3]:
+        a = f" арт {it['article']}" if it.get("article") else ""
+        parts.append(f"{it['name']}{a} — {_format_qty(it['quantity'])}")
+    s = "; ".join(parts)
     extra = ""
-    if len(warehouses) > 4:
-        rest = len(warehouses) - 4
-        extra = f", и ещё на {rest} {_plural(rest, 'складе', 'складах', 'складах')}"
-    unit = _plural(total, "единица", "единицы", "единиц")
-    return (
-        f"Остаток '{item}': всего {_format_qty(total)} {unit}. "
-        f"По складам: {wh}{extra}."
-    )
+    if len(items) > 3:
+        r = len(items) - 3
+        extra = f"; и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
+    return f"По '{user_item}' найдено {len(items)}: {s}{extra}."
 
 
 def query_stock(item: str) -> dict:
@@ -162,6 +187,7 @@ def query_stock(item: str) -> dict:
             "item": item,
             "found": False,
             "quantity": None,
+            "items": [],
             "warehouses": [],
             "message": f"Не удалось определить название товара '{item}'.",
             "source": "1c",
@@ -179,28 +205,75 @@ def query_stock(item: str) -> dict:
         raise RuntimeError(f"1C execute_query error: {body.get('error')}")
 
     _cols, rows = _parse_table(body.get("data", ""))
-    warehouses = []
+    # rows: [Склад, Товар, Артикул, Остаток]  (Артикул may be None)
+    items_map = {}
+    order = []
     for row in rows:
-        if len(row) >= 2 and row[1]:
-            warehouses.append({"name": str(row[0]), "quantity": row[1]})
+        if len(row) < 4 or not row[3]:
+            continue
+        skl, tov, art, qty = row[0], row[1], row[2], row[3]
+        art_s = "" if art is None else str(art)
+        key = (str(tov), art_s)
+        it = items_map.get(key)
+        if it is None:
+            it = {"name": str(tov), "article": art_s, "quantity": 0, "wh": {}}
+            items_map[key] = it
+            order.append(key)
+        it["quantity"] += qty
+        wname = str(skl)
+        it["wh"][wname] = it["wh"].get(wname, 0) + qty
 
-    if not warehouses:
+    if not items_map:
         return {
             "item": item,
             "found": False,
             "quantity": None,
+            "items": [],
             "warehouses": [],
             "message": f"Товар '{item}' не найден в остатках 1С.",
             "source": "1c",
         }
 
-    total = sum(w["quantity"] for w in warehouses)
+    items = []
+    for key in order:
+        it = items_map[key]
+        wh = sorted(
+            [{"name": k, "quantity": v} for k, v in it["wh"].items()],
+            key=lambda w: w["quantity"],
+            reverse=True,
+        )
+        items.append(
+            {
+                "name": it["name"],
+                "article": it["article"],
+                "quantity": it["quantity"],
+                "warehouses": wh,
+            }
+        )
+    items.sort(key=lambda x: x["quantity"], reverse=True)
+
+    single = len(items) == 1
+    qty_top = items[0]["quantity"] if single else None
+
+    # aggregated per-warehouse across all matched rows (compat / debug only;
+    # may mix units when several items match)
+    agg = {}
+    for it in items:
+        for w in it["warehouses"]:
+            agg[w["name"]] = agg.get(w["name"], 0) + w["quantity"]
+    warehouses_all = sorted(
+        [{"name": k, "quantity": v} for k, v in agg.items()],
+        key=lambda w: w["quantity"],
+        reverse=True,
+    )
+
     return {
         "item": item,
         "found": True,
-        "quantity": total,
-        "warehouses": warehouses,
-        "message": _build_message(item, total, warehouses),
+        "quantity": qty_top,
+        "items": items,
+        "warehouses": warehouses_all,
+        "message": _build_message(items, item),
         "source": "1c",
     }
 

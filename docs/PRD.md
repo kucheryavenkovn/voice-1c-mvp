@@ -33,7 +33,7 @@
 | FR-1 | Распознать русскую речь из аудио | `stt` (faster-whisper, medium, GPU float16) |
 | FR-2 | Синтезировать русскую речь | `tts` (Piper, `ru_RU-dmitri-medium`) |
 | FR-3 | Понять намерение и товар | LM Studio через OpenAI-chat, JSON-intent |
-| FR-4 | Вернуть остаток товара | 1C MCP Toolkit (`POST /api/execute_query`, регистр `ТоварыНаСкладах`); mock-api — фоллбэк |
+| FR-4 | Вернуть остаток товара | 1C MCP Toolkit (`POST /api/execute_query`, регистр `ТоварыНаСкладах`); поиск по наименованию **или артикулу**; mock-api — фоллбэк |
 | FR-5 | Полный цикл «аудио→ответ» | `voice-gateway` `/ask` |
 | FR-6 | Голосовой UI | веб-чат на `http://localhost:8103` |
 | NFR-1 | Запуск из pwsh | `docker compose` + PS-скрипты |
