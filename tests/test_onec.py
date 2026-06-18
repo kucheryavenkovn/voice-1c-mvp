@@ -16,7 +16,7 @@ def test_query_single_groups_warehouses(gw):
     assert it["unit"] == "шт"
     assert it["quantity"] == 50
     assert res["quantity"] == 50
-    assert "всего 50 шт" in res["message"]
+    assert "всего 50 шт" in res["message"] and "По складам" in res["message"]
 
 
 def test_query_multi_heterogeneous_units(gw):
@@ -25,8 +25,8 @@ def test_query_multi_heterogeneous_units(gw):
     assert res["found"] is True
     assert len(res["items"]) == 3
     assert res["quantity"] is None  # mixed units (кг + шт) → no sum
-    # per-unit subtotals in the message
     assert "10 кг" in res["message"] and "7 шт" in res["message"]
+    assert "По складам" in res["message"]
 
 
 def test_query_empty_not_found(gw):

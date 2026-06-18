@@ -65,6 +65,7 @@ def test_query_article_7777_three_items_mixed_units(gw):
     assert len(res["items"]) == 3
     assert res["quantity"] is None  # heterogeneous units (кг + шт)
     assert "кг" in res["message"] and "шт" in res["message"]
+    assert "По складам" in res["message"]  # total + per-warehouse breakdown
     barb = next(it for it in res["items"] if it["name"].startswith("Барбарис"))
     assert barb["article"] == "Арт-7777"
     assert barb["unit"] == "кг"
@@ -79,6 +80,7 @@ def test_query_barbaris_single_item_real(gw):
     assert res["items"][0]["unit"] == "кг"
     assert res["quantity"] == 210.25
     assert "210.25 кг" in res["message"]
+    assert "По складам" in res["message"]
 
 
 def test_query_tv_sharp_multiword_real(gw):
@@ -93,10 +95,11 @@ def test_query_tv_sharp_multiword_real(gw):
 
 
 def test_query_milk_homogeneous_grand_total(gw):
-    """All milk items share unit шт → get_stock gives a meaningful total."""
+    """All milk items share unit шт → get_stock gives total + per-warehouse breakdown."""
     gw.onec_data = _read("milk_aggregated")
     res = onec.query_stock("молоко")
     assert res["found"] is True
     assert len(res["items"]) == 6
     assert {it["unit"] for it in res["items"]} == {"шт"}
-    assert res["message"].startswith("Остаток по 'молоко': всего 480 шт (6 позиций")
+    assert res["message"].startswith("Остаток по 'молоко': всего 480 шт.")
+    assert "По складам" in res["message"]

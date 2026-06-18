@@ -17,6 +17,7 @@ def _item(name="Молоко", article="Арт-1", qty=50, unit="шт", nwh=2):
 def test_single_item_message_with_unit():
     m = onec._build_message([_item(qty=50, unit="шт", nwh=2)], "молоко")
     assert m.startswith("Молоко (арт. Арт-1): всего 50 шт.")
+    assert "По складам" in m
     assert "Склад1 1" in m and "Склад2 2" in m
 
 
@@ -30,16 +31,14 @@ def test_single_item_no_unit_falls_back_to_plural():
 def test_single_item_no_article():
     it = _item()
     it["article"] = ""
-    m = onec._build_message([it], "молоко")
-    assert m.startswith("Молоко: всего 50 шт.")
+    assert onec._build_message([it], "молоко").startswith("Молоко: всего 50 шт.")
 
 
 def test_single_item_many_warehouses_extra():
-    m = onec._build_message([_item(nwh=6)], "молоко")
-    assert "и ещё на 2 складах" in m
+    assert "и ещё на 2 складах" in onec._build_message([_item(nwh=6)], "молоко")
 
 
-def test_multi_homogeneous_units_grand_total():
+def test_multi_homogeneous_grand_total():
     items = [
         {
             "name": "Телевизор SHARP",
@@ -50,12 +49,10 @@ def test_multi_homogeneous_units_grand_total():
         },
         {"name": "Телевизор JVC", "article": "Т-1", "unit": "шт", "quantity": 10, "warehouses": []},
     ]
-    m = onec._build_message(items, "телевизор")
-    assert m.startswith("Остаток по 'телевизор': всего 137 шт (2 позиции:")
-    assert "Телевизор SHARP 127" in m and "Телевизор JVC 10" in m
+    assert onec._build_message(items, "телевизор") == "Остаток по 'телевизор': всего 137 шт."
 
 
-def test_multi_heterogeneous_units_subtotals():
+def test_multi_heterogeneous_subtotals():
     items = [
         {
             "name": "Сахар весовой",
@@ -80,18 +77,31 @@ def test_multi_heterogeneous_units_subtotals():
         },
     ]
     m = onec._build_message(items, "сахар")
-    assert "385 кг" in m and "205 упак" in m  # 110 + 95
-    assert "всего" not in m  # no meaningless cross-unit sum
+    assert "385 кг" in m and "205 упак" in m
+    assert "всего" not in m  # cross-unit sum is meaningless
 
 
-def test_multi_more_than_four():
+def test_multi_with_warehouses_breakdown():
     items = [
-        {"name": f"Товар{i}", "article": f"A{i}", "unit": "шт", "quantity": i, "warehouses": []}
-        for i in range(1, 6)
+        {
+            "name": "Барбарис",
+            "article": "Арт-7777",
+            "unit": "кг",
+            "quantity": 10,
+            "warehouses": [{"name": "Склад1", "quantity": 10}],
+        },
+        {
+            "name": "Соковыжималка",
+            "article": "СО-1",
+            "unit": "шт",
+            "quantity": 2,
+            "warehouses": [{"name": "Склад1", "quantity": 2}],
+        },
     ]
-    m = onec._build_message(items, "x")
-    assert "всего 15 шт (5 позиций" in m
-    assert "и ещё 1 позиция" in m
+    m = onec._build_message(items, "q")
+    assert m.startswith("Остаток по 'q': 10 кг + 2 шт.")
+    assert "По складам:" in m
+    assert "Склад1 (10 кг, 2 шт)" in m  # per-unit inside the warehouse
 
 
 @pytest.mark.parametrize(

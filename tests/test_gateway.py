@@ -40,7 +40,7 @@ def test_ask_text_single_item(gw):
     assert r.headers["content-type"] == "audio/wav"
     assert r.content.startswith(b"RIFF")
     ans = unquote(r.headers["X-Answer"])
-    assert "всего 50" in ans and "Молоко 3.2%" in ans
+    assert "всего 50 шт" in ans and "По складам" in ans
     intent = json.loads(unquote(r.headers["X-Intent"]))
     assert intent["action"] == "get_stock"
 
@@ -51,8 +51,8 @@ def test_ask_text_article_multi(gw):
     r = gw.client.post("/ask-text", json={"text": "остаток по 7777"})
     assert r.status_code == 200
     ans = unquote(r.headers["X-Answer"])
-    # heterogeneous units (кг + шт) → per-unit subtotals, no 'всего' sum
-    assert "10 кг" in ans and "7 шт" in ans
+    # heterogeneous units (кг + шт) → per-unit subtotals + per-warehouse
+    assert "10 кг" in ans and "7 шт" in ans and "По складам" in ans
     assert "всего" not in ans
     assert (
         r.headers["X-Question"]

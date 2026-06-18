@@ -198,11 +198,11 @@ def _unit_of(it: dict) -> str:
 
 
 def _build_message(items: list, user_item: str) -> str:
-    """Voice-friendly summary for get_stock ('сколько всего').
+    """Voice-friendly summary for get_stock ('сколько / общий остаток / по складам').
 
-    One item → total + per-warehouse. Several items with the SAME unit → grand total
-    (TVs: 137 шт). Several items with DIFFERENT units → subtotals per unit
-    (сахар: 385 кг + 205 упак), because cross-unit sum is meaningless.
+    Always: total + per-warehouse breakdown. Single item keeps its name; several
+    items are aggregated — total per unit (same unit → grand total; different units
+    → per-unit subtotals) + per-warehouse totals (per unit within a warehouse).
     """
 
     def art_full(it):
@@ -215,7 +215,7 @@ def _build_message(items: list, user_item: str) -> str:
         head = f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])}{ustr}."
         if not it["warehouses"]:
             return head
-        top = it["warehouses"][:4]
+        top = sorted(it["warehouses"], key=lambda w: w["quantity"], reverse=True)[:4]
         wh = ", ".join(f"{w['name']} {_format_qty(w['quantity'])}" for w in top)
         extra = ""
         if len(it["warehouses"]) > 4:
@@ -223,37 +223,41 @@ def _build_message(items: list, user_item: str) -> str:
             extra = f", и ещё на {r} {_plural(r, 'складе', 'складах', 'складах')}"
         return f"{head} По складам: {wh}{extra}."
 
-    units = []
+    # several items → aggregate by unit + by warehouse
+    unit_totals: dict[str, float] = {}
+    wh_map: dict[str, dict[str, float]] = {}
     for it in items:
         u = _unit_of(it)
-        if u and u not in units:
-            units.append(u)
+        unit_totals[u] = unit_totals.get(u, 0) + it["quantity"]
+        for w in it["warehouses"]:
+            d = wh_map.setdefault(w["name"], {})
+            d[u] = d.get(u, 0) + w["quantity"]
 
+    units = [u for u in unit_totals if u]
     if len(units) <= 1:
-        # homogeneous units → meaningful grand total
-        total = sum(it["quantity"] for it in items)
-        ustr = f" {units[0]}" if units else ""
-        brief = ", ".join(f"{it['name']} {_format_qty(it['quantity'])}" for it in items[:4])
-        extra = ""
-        if len(items) > 4:
-            r = len(items) - 4
-            extra = f", и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
-        n = len(items)
-        pos = _plural(n, "позиция", "позиции", "позиций")
-        return (
-            f"Остаток по '{user_item}': всего {_format_qty(total)}{ustr} "
-            f"({n} {pos}: {brief}{extra})."
+        u = units[0] if units else ""
+        total_str = (
+            f"всего {_format_qty(sum(it['quantity'] for it in items))}{(' ' + u) if u else ''}"
         )
+    else:
+        total_str = " + ".join(f"{_format_qty(unit_totals[u])} {u}" for u in units)
 
-    # heterogeneous units → subtotals per unit
-    sub = {}
-    for it in items:
-        u = _unit_of(it) or "?"
-        sub[u] = sub.get(u, 0) + it["quantity"]
-    parts = [f"{_format_qty(v)} {u}" for u, v in sub.items()]
-    n = len(items)
-    pos = _plural(n, "позиция", "позиции", "позиций")
-    return f"Остаток по '{user_item}': " + " + ".join(parts) + f" ({n} {pos})."
+    def fmt_wh(wh, d):
+        if len(d) <= 1:
+            (u, q) = next(iter(d.items()))
+            return f"{wh} {_format_qty(q)}{(' ' + u) if u else ''}"
+        return f"{wh} (" + ", ".join(f"{_format_qty(q)} {u}" for u, q in d.items()) + ")"
+
+    wh_sorted = sorted(wh_map.items(), key=lambda kv: sum(kv[1].values()), reverse=True)
+    if not wh_sorted:
+        return f"Остаток по '{user_item}': {total_str}."
+    top = wh_sorted[:4]
+    wh_str = ", ".join(fmt_wh(wh, d) for wh, d in top)
+    extra = ""
+    if len(wh_sorted) > 4:
+        r = len(wh_sorted) - 4
+        extra = f", и ещё на {r} {_plural(r, 'складе', 'складах', 'складах')}"
+    return f"Остаток по '{user_item}': {total_str}. По складам: {wh_str}{extra}."
 
 
 def _build_list_message(items: list, user_item: str) -> str:
