@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>voice-1c-mvp — диагностика микрофона</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --accent:#4f8cff; --accent2:#e06c3a;
+          --txt:#e6e8ee; --muted:#9aa3b2; --ok:#3fb950; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:var(--bg);
+         color:var(--txt); padding:18px; max-width:980px; margin:0 auto; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  a { color:var(--accent); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  button { background:var(--accent); color:#fff; border:none; border-radius:10px;
+           padding:10px 16px; font-size:14px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.stop { background:var(--accent2); }
+  #timer { font-variant-numeric:tabular-nums; color:var(--muted); min-width:90px; }
+  .live { font-variant-numeric:tabular-nums; }
+  canvas { width:100%; height:220px; background:#0b0d12; border:1px solid #232733; border-radius:10px; display:block; }
+  .panel { background:var(--panel); border:1px solid #232733; border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+  .stat { background:#0f1115; border:1px solid #2a2f3c; border-radius:10px; padding:10px; }
+  .stat .k { font-size:11px; color:var(--muted); }
+  .stat .v { font-size:18px; font-variant-numeric:tabular-nums; }
+  .hint { color:var(--muted); font-size:12px; }
+  label { font-size:13px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; }
+  input[type=range] { accent-color:var(--accent); vertical-align:middle; }
+  .ph { margin:6px 0; }
+  .ph span { display:inline-block; background:#243049; border-radius:6px; padding:2px 8px; margin:2px 4px 2px 0; font-size:12px; }
+  .reco { background:#10241a; border:1px solid #1f4d33; border-radius:10px; padding:10px 12px; color:var(--ok); font-size:14px; margin-top:6px; }
+  audio { width:100%; margin-top:8px; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; margin-right:14px; font-size:12px; color:var(--muted); }
+  .sw { width:12px; height:3px; display:inline-block; border-radius:2px; }
+</style>
+</head>
+<body>
+  <h1>🎤 Диагностика микрофона / VAD</h1>
+  <div class="sub">Запиши фразу — авто-стоп через 10 сек. Потом увидишь уровень сигнала, шум и как VAD разметит речь. <a href="/">← в чат</a></div>
+
+  <div class="panel">
+    <div class="row">
+      <button id="rec">● Запись (10 сек)</button>
+      <button id="stop" class="stop" disabled>■ Стоп</button>
+      <span id="timer">0.0 / 10.0 c</span>
+      <span class="live">RMS: <b id="live">—</b></span>
+    </div>
+    <canvas id="cv" width="1200" height="220"></canvas>
+    <div class="legend" style="margin-top:8px">
+      <span><i class="sw" style="background:var(--accent)"></i> RMS (сглаженный)</span>
+      <span><i class="sw" style="background:var(--accent2)"></i> порог старт</span>
+      <span><i class="sw" style="background:var(--err)"></i> порог стоп</span>
+      <span><i class="sw" style="background:var(--ok)"></i> шум</span>
+      <span><i class="sw" style="background:rgba(63,185,80,.25)"></i> = речь</span>
+    </div>
+  </div>
+
+  <div class="panel" id="res" style="display:none">
+    <div class="grid">
+      <div class="stat"><div class="k">пик (max RMS)</div><div class="v" id="s-peak">—</div></div>
+      <div class="stat"><div class="k">среднее</div><div class="v" id="s-mean">—</div></div>
+      <div class="stat"><div class="k">шум (p10)</div><div class="v" id="s-noise">—</div></div>
+      <div class="stat"><div class="k">медиана</div><div class="v" id="s-med">—</div></div>
+      <div class="stat"><div class="k">пик/шум ×</div><div class="v" id="s-snr">—</div></div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <label>порог: <input type="range" id="thr" min="0.010" max="0.150" step="0.005" value="0.040"></label>
+      <label>пауза до ответа: <input type="range" id="pause" min="300" max="2000" step="100" value="800"> мс</label>
+    </div>
+
+    <div class="reco" id="reco">—</div>
+
+    <div class="hint" style="margin:10px 0 4px">Как VAD разметил эту запись:</div>
+    <div class="ph" id="phrases"></div>
+
+    <div class="hint" style="margin-top:10px">Прослушать запись:</div>
+    <audio id="play" controls></audio>
+  </div>
+
+<script>
+const recBtn = document.getElementById('rec');
+const stopBtn = document.getElementById('stop');
+const timerEl = document.getElementById('timer');
+const liveEl = document.getElementById('live');
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const resEl = document.getElementById('res');
+const thr = document.getElementById('thr');
+const pauseEl = document.getElementById('pause');
+
+const DURATION = 10.0;       // секунд
+const DT = 0.05;             // интервал опроса RMS (с)
+let samples = [];            // [{t, rms}]
+let smoothed = [];
+let mediaRecorder = null, chunks = [], streamRef = null;
+let audioCtx = null, analyser = null, srcNode = null, rmsBuf = null;
+let timer = null, recStart = 0, sm = 0, noiseFloor = 0;
+
+function pct(arr, p) {
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a,b)=>a-b);
+  return s[Math.floor((s.length-1)*p)];
+}
+function fmt(x){ return x.toFixed(3); }
+
+function draw(progress) {
+  // progress 0..1 for live fill
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0,0,W,H);
+  const N = samples.length;
+  const maxN = Math.max(N, Math.round(DURATION/DT));
+  // scale by peak so far or fixed
+  const peak = samples.length ? Math.max(0.05, ...samples.map(s=>s.rms)) : 0.2;
+  const scaleY = (v) => H - (Math.min(v, peak*1.1) / (peak*1.1)) * H;
+
+  // grid
+  ctx.strokeStyle = '#1b2030'; ctx.lineWidth = 1;
+  for (let i=1;i<5;i++){ const y = H*i/5; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // RMS line
+  ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 2; ctx.beginPath();
+  for (let i=0;i<N;i++){ const x = (i/(maxN-1))*W; const y = scaleY(smoothed[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+  ctx.stroke();
+
+  if (progress>=1 && N) {
+    drawAnalysis();
+  }
+  // playhead during recording
+  if (progress<1 && N) {
+    const x = (N/(maxN-1))*W;
+    ctx.strokeStyle='#e06c3a'; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+  }
+}
+
+function drawAnalysis() {
+  const W = cv.width, H = cv.height;
+  const N = samples.length;
+  const maxN = Math.max(N, Math.round(DURATION/DT));
+  const peak = Math.max(0.05, ...samples.map(s=>s.rms));
+  const scaleY = (v) => H - (Math.min(v, peak*1.1) / (peak*1.1)) * H;
+  const xof = (i) => (i/(maxN-1))*W;
+
+  // detected speech bands (simulate)
+  const segs = simulate();
+  ctx.fillStyle = 'rgba(63,185,80,.18)';
+  for (const s of segs) {
+    const x1 = xof(s.i0), x2 = xof(s.i1-1);
+    ctx.fillRect(x1, 0, Math.max(2,x2-x1), H);
+  }
+  // threshold lines
+  const off = parseFloat(thr.value);
+  const sp = noiseFloor + off, si = noiseFloor + off*0.45;
+  const line = (val, color) => { ctx.strokeStyle=color; ctx.setLineDash([6,4]); ctx.lineWidth=1.5;
+    const y = scaleY(val); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); ctx.setLineDash([]); };
+  line(sp, '#e06c3a');
+  line(si, '#ff6b6b');
+  line(noiseFloor, '#3fb950');
+
+  // phrases text
+  const phEl = document.getElementById('phrases');
+  phEl.innerHTML = '';
+  if (!segs.length) { phEl.innerHTML = '<span class="hint">речь не обнаружена — подними «порог» или говори громче</span>'; }
+  else {
+    for (const s of segs) {
+      const dur = (s.i1 - s.i0)*DT;
+      const t0 = s.i0*DT;
+      const sp = document.createElement('span'); sp.textContent = `${t0.toFixed(1)}с · ${dur.toFixed(1)}с`;
+      phEl.appendChild(sp);
+    }
+  }
+}
+
+function simulate() {
+  const off = parseFloat(thr.value);
+  const sp = noiseFloor + off, si = noiseFloor + off*0.45;
+  const startFrames = Math.round(0.22/DT);
+  const pauseFrames = Math.round((parseInt(pauseEl.value,10)/1000)/DT);
+  const minFrames = Math.round(0.35/DT);
+  const segs = []; let inSpeech=false, above=0, segStart=0, lastVoice=0;
+  for (let i=0;i<smoothed.length;i++){
+    const v = smoothed[i];
+    if (!inSpeech) {
+      if (v>sp) { above++; if (above>=startFrames){ inSpeech=true; segStart=i-startFrames; lastVoice=i; above=0; } }
+      else above=0;
+    } else {
+      if (v>si) lastVoice=i;
+      if (i-lastVoice>=pauseFrames) {
+        if (lastVoice-segStart>=minFrames) segs.push({i0:Math.max(0,segStart), i1:lastVoice+1});
+        inSpeech=false; above=0;
+      }
+    }
+  }
+  if (inSpeech && lastVoice-segStart>=minFrames) segs.push({i0:Math.max(0,segStart), i1:lastVoice+1});
+  return segs;
+}
+
+async function start() {
+  try {
+    streamRef = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+  } catch(e){ alert('Микрофон: '+e.message); return; }
+  recBtn.disabled = true; stopBtn.disabled = false;
+  samples = []; smoothed = []; sm = 0; chunks = [];
+  // also capture for playback
+  try {
+    mediaRecorder = new MediaRecorder(streamRef);
+    mediaRecorder.ondataavailable = e => { if (e.data&&e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunks, { type:(mediaRecorder.mimeType||'audio/webm').split(';')[0] });
+      document.getElementById('play').src = URL.createObjectURL(blob);
+    };
+    mediaRecorder.start();
+  } catch {}
+
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  srcNode = audioCtx.createMediaStreamSource(streamRef);
+  analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048;
+  srcNode.connect(analyser); rmsBuf = new Float32Array(analyser.fftSize);
+  if (audioCtx.state==='suspended') await audioCtx.resume();
+  recStart = performance.now();
+  timer = setInterval(tick, DT*1000);
+}
+
+function tick() {
+  analyser.getFloatTimeDomainData(rmsBuf);
+  let s=0; for (let i=0;i<rmsBuf.length;i++){ const v=rmsBuf[i]; s+=v*v; }
+  const r = Math.sqrt(s/rmsBuf.length);
+  sm = sm*(r>sm?0.5:0.8)+r*(r>sm?0.5:0.2);
+  samples.push({t:(performance.now()-recStart)/1000, rms:r});
+  smoothed.push(sm);
+  const el = (performance.now()-recStart)/1000;
+  timerEl.textContent = el.toFixed(1)+' / '+DURATION.toFixed(1)+' c';
+  liveEl.textContent = fmt(sm);
+  draw(el/DURATION);
+  if (el >= DURATION) stop();
+}
+
+function stop() {
+  if (timer){ clearInterval(timer); timer=null; }
+  try { if (mediaRecorder && mediaRecorder.state==='recording') mediaRecorder.stop(); } catch {}
+  if (streamRef) streamRef.getTracks().forEach(t=>t.stop());
+  if (srcNode) try{srcNode.disconnect();}catch{}
+  if (audioCtx) try{audioCtx.close();}catch{}
+  audioCtx=null; analyser=null; srcNode=null;
+  recBtn.disabled=false; stopBtn.disabled=true;
+  finalize();
+}
+
+function finalize() {
+  if (!samples.length) return;
+  const rms = samples.map(s=>s.rms);
+  const peak = Math.max(...rms);
+  const mean = rms.reduce((a,b)=>a+b,0)/rms.length;
+  const med = pct(rms,0.5);
+  noiseFloor = pct(rms,0.10);  // p10 → фоновый шум
+  document.getElementById('s-peak').textContent = fmt(peak);
+  document.getElementById('s-mean').textContent = fmt(mean);
+  document.getElementById('s-noise').textContent = fmt(noiseFloor);
+  document.getElementById('s-med').textContent = fmt(med);
+  document.getElementById('s-snr').textContent = noiseFloor>0 ? (peak/noiseFloor).toFixed(1)+'×' : '—';
+
+  // recommended threshold: noise + ~0.03, clamped
+  let rec = Math.min(0.15, Math.max(0.02, noiseFloor + 0.03));
+  // round to step 0.005
+  rec = Math.round(rec*200)/200;
+  thr.value = rec.toFixed(3);
+  document.getElementById('reco').innerHTML =
+    `Рекомендованный «порог» для чата: <b>${rec.toFixed(3)}</b> (шум ${fmt(noiseFloor)} + запас 0.030). ` +
+    `Поставь это значение ползунком «порог» в <a href="/">чате</a>. Подними, если шум pulsирует.`;
+  resEl.style.display='block';
+  draw(1);
+}
+
+recBtn.addEventListener('click', start);
+stopBtn.addEventListener('click', stop);
+thr.addEventListener('input', ()=>draw(1));
+pauseEl.addEventListener('input', ()=>draw(1));
+</script>
+</body>
+</html>

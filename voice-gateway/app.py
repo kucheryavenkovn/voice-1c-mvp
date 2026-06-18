@@ -51,6 +51,11 @@ def index():
     return HTMLResponse(content=(HERE / "static" / "index.html").read_text(encoding="utf-8"))
 
 
+@app.get("/diag", response_class=HTMLResponse)
+def diag():
+    return HTMLResponse(content=(HERE / "static" / "diag.html").read_text(encoding="utf-8"))
+
+
 def resolve_model() -> str:
     global _cached_model
     if LM_MODEL and LM_MODEL.lower() not in ("", "auto"):
