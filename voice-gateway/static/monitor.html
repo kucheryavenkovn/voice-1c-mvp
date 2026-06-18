@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>voice-1c-mvp — мониторинг</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --accent:#4f8cff; --accent2:#e06c3a;
+          --txt:#e6e8ee; --muted:#9aa3b2; --ok:#3fb950; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:var(--bg);
+         color:var(--txt); padding:18px; max-width:1100px; margin:0 auto; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  a { color:var(--accent); }
+  .top { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:14px; }
+  .stat { background:var(--panel); border:1px solid #232733; border-radius:10px; padding:10px; }
+  .stat .k { font-size:11px; color:var(--muted); }
+  .stat .v { font-size:20px; font-variant-numeric:tabular-nums; }
+  .err { color:var(--err); }
+  .panel { background:var(--panel); border:1px solid #232733; border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:6px 8px; text-align:right; font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; border-bottom:1px solid #232733; }
+  td { border-bottom:1px solid #1c212c; }
+  .bar { position:relative; height:18px; background:#0b0d12; border-radius:4px; overflow:hidden; min-width:60px; }
+  .bar > i { position:absolute; left:0; top:0; bottom:0; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+  .recent td { font-size:12px; }
+  .recent .q { color:var(--txt); }
+  .recent .m { color:var(--muted); }
+  .tag { display:inline-block; padding:1px 6px; border-radius:6px; font-size:11px; background:#243049; }
+  .tag.ask { background:#1f3a5f; } .tag.ask-text { background:#243049; } .tag.transcribe { background:#2a2230; }
+  .errcell { color:var(--err); }
+  .live::after { content:" ●"; color:var(--ok); animation:blink 1.2s infinite; }
+  @keyframes blink { 50%{opacity:.3} }
+</style>
+</head>
+<body>
+  <h1>📊 Мониторинг пайплайна <span id="live" class="live"></span></h1>
+  <div class="sub">Тайминги по этапам (мс): STT → LM → 1C/stock → TTS. Обновление каждые 2 с. <a href="/">← в чат</a></div>
+
+  <div class="top">
+    <div class="stat"><div class="k">turns</div><div class="v" id="turns">—</div></div>
+    <div class="stat"><div class="k">errors</div><div class="v err" id="errors">—</div></div>
+    <div class="stat"><div class="k">error rate</div><div class="v" id="errrate">—</div></div>
+    <div class="stat"><div class="k">p95 total, мс</div><div class="v" id="p95">—</div></div>
+  </div>
+
+  <div class="panel">
+    <div style="margin-bottom:8px;color:var(--muted)">Этапы (avg / p50 / p95 / max, мс)</div>
+    <table id="stages"><thead>
+      <tr><th>этап</th><th>n</th><th>avg</th><th>p50</th><th>p95</th><th>max</th><th>p95 (визуально)</th></tr>
+    </thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <div style="margin-bottom:8px;color:var(--muted)">Последние ходы</div>
+    <table class="recent"><thead>
+      <tr><th>когда</th><th>тип</th><th>этапы (мс)</th><th>запрос / товар</th><th>результат</th></tr>
+    </thead><tbody id="recent"></tbody></table>
+  </div>
+
+<script>
+const STAGES = [["stt","STT"],["lm","LM"],["stock","1C"],["tts","TTS"],["total","total"]];
+const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function hm(ms){ if(ms==null) return '—'; if(ms<1000) return ms; return (ms/1000).toFixed(2)+'s'; }
+function rel(ts){ const d=(Date.now()-new Date(ts))/1000; return d<60?Math.round(d)+'с':Math.round(d/60)+'м'; }
+
+async function tick(){
+  try {
+    const m = await (await fetch('/metrics')).json();
+    document.getElementById('turns').textContent = m.turns;
+    document.getElementById('errors').textContent = m.errors;
+    document.getElementById('errrate').textContent = (m.error_rate*100).toFixed(1)+'%';
+    document.getElementById('p95').textContent = hm(m.total?.p95);
+    const maxp95 = Math.max(1, ...STAGES.map(([k])=>m[k]?.p95||0));
+    let rows = '';
+    for (const [k,label] of STAGES){
+      const s = m[k]||{};
+      rows += `<tr><td>${label}</td><td>${s.n||0}</td><td>${hm(s.avg)}</td><td>${hm(s.p50)}</td>`+
+              `<td>${hm(s.p95)}</td><td>${hm(s.max)}</td>`+
+              `<td><div class="bar"><i style="width:${Math.round(((s.p95||0)/maxp95)*100)}%"></i></div></td></tr>`;
+    }
+    document.querySelector('#stages tbody').innerHTML = rows;
+    let r = '';
+    for (const t of (m.recent||[])){
+      const parts = ['stt','lm','stock','tts','total'].filter(k=>t[k+'_ms']!=null)
+                     .map(k=>`${k} ${Math.round(t[k+'_ms'])}`).join(' · ');
+      const res = t.error ? `<span class="errcell">${esc(t.error)}</span>`
+                : (t.found!=null ? (t.found ? `✓ items=${t.items||0}` : 'не найдено') : 'ок');
+      const qi = t.question || t.item || '';
+      r += `<tr><td class="m">${t.ts?rel(t.ts):'—'}</td>`+
+           `<td><span class="tag ${esc(t.kind)}">${esc(t.kind)}</span></td>`+
+           `<td>${esc(parts)}</td><td class="q">${esc(qi)}</td><td>${res}</td></tr>`;
+    }
+    document.getElementById('recent').innerHTML = r || '<tr><td colspan="5" class="m">пока нет данных</td></tr>';
+  } catch(e){ document.getElementById('live').textContent=' (шлюз недоступен)'; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

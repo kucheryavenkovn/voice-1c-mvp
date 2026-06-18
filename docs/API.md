@@ -7,6 +7,15 @@
 ### `GET /`
 HTML-страница голосового веб-чата.
 
+### `GET /metrics`
+Агрегаты по этапам (мс): `{turns, errors, error_rate, stt|lm|stock|tts|total:{n,avg,p50,p95,max}, recent:[…traces…]}`.
+
+### `GET /monitor`
+HTML-дашборд таймингов и последних ходов (автообновление 2 с).
+
+У ответов `/ask`, `/ask-text`, `/transcribe` есть заголовок `X-Timings`
+(`stt=..,lm=..,stock=..,tts=..,total=..`).
+
 ### `GET /health`
 ```json
 { "ok": true, "stt": true, "tts": true,

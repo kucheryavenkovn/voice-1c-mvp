@@ -4,10 +4,11 @@ import pathlib
 import re
 import urllib.parse
 
+import metrics
 import onec
 import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -167,21 +168,33 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     return "Я умею узнавать остатки по товарам. Спросите, например: какой остаток по молоку?"
 
 
-def orchestrate(text: str) -> tuple[bytes, dict]:
+def orchestrate(text: str) -> tuple[bytes, dict, dict]:
+    """Run LM → stock → TTS and return (audio, headers, trace_extra)."""
+    t_lm = metrics.ms()
     intent, raw = lm_intent(text)
+    lm_ms = metrics.ms() - t_lm
+
     stock = None
-    if (intent or {}).get("action") == "get_stock" and (intent or {}).get("item"):
+    item = (intent or {}).get("item")
+    if (intent or {}).get("action") == "get_stock" and item:
+        t_stock = metrics.ms()
         try:
-            stock = call_stock_api(intent["item"])
+            stock = call_stock_api(item)
         except Exception as e:
             stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
+        stock_ms = metrics.ms() - t_stock
+    else:
+        stock_ms = None
+
     answer = build_answer(text, intent, stock)
 
+    t_tts = metrics.ms()
     try:
         tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
         tts_r.raise_for_status()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"TTS failed: {e}") from e
+    tts_ms = metrics.ms() - t_tts
 
     headers = {
         "X-Question": urllib.parse.quote(text),
@@ -189,7 +202,25 @@ def orchestrate(text: str) -> tuple[bytes, dict]:
         "X-Answer": urllib.parse.quote(answer),
         "X-LM-Raw": urllib.parse.quote((raw or "")[:500]),
     }
-    return tts_r.content, headers
+    extra = {
+        "lm_ms": lm_ms,
+        "stock_ms": stock_ms,
+        "tts_ms": tts_ms,
+        "stock_src": (stock or {}).get("source") if stock else None,
+        "item": item,
+        "found": (stock or {}).get("found") if stock else None,
+        "items": len((stock or {}).get("items", [])) if stock else 0,
+        "answer_len": len(answer),
+    }
+    return tts_r.content, headers, extra
+
+
+def _finish(headers: dict, trace: dict) -> Response:
+    trace["total_ms"] = max(0.0, metrics.ms() - trace.pop("_t0", metrics.ms()))
+    headers["X-Timings"] = metrics.fmt_timings(trace)
+    metrics.record(trace)
+    print(metrics.log_line(trace), flush=True)
+    return Response(content=headers.pop("_audio"), media_type="audio/wav", headers=headers)
 
 
 @app.get("/health")
@@ -227,9 +258,15 @@ def speak(req: SpeakRequest):
 @app.post("/transcribe")
 def transcribe(file: UploadFile = File(...)):
     files = {"file": (file.filename or "audio.wav", file.file, file.content_type)}
+    t0 = metrics.ms()
     r = requests.post(f"{STT_URL}/stt", files=files, timeout=180)
     r.raise_for_status()
-    return r.json()
+    stt_ms = metrics.ms() - t0
+    data = r.json()
+    trace = {"kind": "transcribe", "_t0": t0, "stt_ms": stt_ms, "total_ms": stt_ms}
+    metrics.record(trace)
+    print(metrics.log_line(trace), flush=True)
+    return JSONResponse(content=data, headers={"X-Timings": metrics.fmt_timings(trace)})
 
 
 class AskTextRequest(BaseModel):
@@ -241,8 +278,15 @@ def ask_text(req: AskTextRequest):
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty text")
-    audio, headers = orchestrate(text)
-    return Response(content=audio, media_type="audio/wav", headers=headers)
+    t0 = metrics.ms()
+    try:
+        audio, headers, extra = orchestrate(text)
+    except HTTPException as e:
+        _err(t0, "ask-text", str(e.detail))
+        raise
+    trace = {"kind": "ask-text", "_t0": t0, **extra}
+    headers["_audio"] = audio
+    return _finish(headers, trace)
 
 
 @app.post("/ask")
@@ -255,13 +299,41 @@ def ask(file: UploadFile = File(...)):
             file.content_type or "application/octet-stream",
         )
     }
+    t0 = metrics.ms()
+    t_stt = metrics.ms()
     try:
         stt_r = requests.post(f"{STT_URL}/stt", files=files, timeout=180)
         stt_r.raise_for_status()
+    except HTTPException:
+        raise
     except Exception as e:
+        _err(t0, "ask", f"STT failed: {e}")
         raise HTTPException(status_code=502, detail=f"STT failed: {e}") from e
+    stt_ms = metrics.ms() - t_stt
     text = (stt_r.json().get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="STT returned empty text")
-    audio, headers = orchestrate(text)
-    return Response(content=audio, media_type="audio/wav", headers=headers)
+    try:
+        audio, headers, extra = orchestrate(text)
+    except HTTPException as e:
+        _err(t0, "ask", str(e.detail), stt_ms=stt_ms)
+        raise
+    trace = {"kind": "ask", "_t0": t0, "stt_ms": stt_ms, **extra}
+    headers["_audio"] = audio
+    return _finish(headers, trace)
+
+
+def _err(t0: float, kind: str, msg: str, **extra) -> None:
+    trace = {"kind": kind, "_t0": t0, "error": msg[:200], "total_ms": metrics.ms() - t0, **extra}
+    metrics.record(trace)
+    print(metrics.log_line(trace), flush=True)
+
+
+@app.get("/metrics")
+def get_metrics():
+    return metrics.snapshot()
+
+
+@app.get("/monitor", response_class=HTMLResponse)
+def monitor():
+    return HTMLResponse(content=(HERE / "static" / "monitor.html").read_text(encoding="utf-8"))

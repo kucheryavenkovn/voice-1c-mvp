@@ -62,6 +62,7 @@
     <h1>🎙 voice-1c-mvp</h1>
     <span class="sub">голос → STT → LM Studio → 1C → TTS</span>
     <a href="/diag" style="margin-left:10px;font-size:12px;color:var(--accent)">🎤 диагностика</a>
+    <a href="/monitor" style="font-size:12px;color:var(--accent)">📊 мониторинг</a>
     <span id="status" class="dot">готов</span>
   </header>
 
@@ -315,10 +316,12 @@ async function runTurn(blob, ext) {
   setMsgText(me, '🎤 распознаю…', true);
   setStatus('распознаю…', 'var(--accent)');
   let text = '';
+  let sttH = '';
   try {
     const fd = new FormData(); fd.append('file', blob, 'audio.' + ext);
     const tr = await fetch('/transcribe', { method:'POST', body: fd });
     if (!tr.ok) throw new Error('/transcribe ' + tr.status);
+    sttH = tr.headers.get('X-Timings') || '';
     const tj = await tr.json();
     text = (tj.text || '').trim();
   } catch (e) {
@@ -334,21 +337,36 @@ async function runTurn(blob, ext) {
   }
   // 2) intent + 1C + TTS
   setStatus('обрабатываю…', 'var(--accent)');
-  await answerFromText(text);
+  await answerFromText(text, sttH);
 }
 
-async function answerFromText(text) {
+function fmtTimings(sttH, askH) {
+  // merge 'stt=..,lm=..,stock=..,tts=..,total=..' into a compact label
+  const map = {};
+  for (const h of [sttH, askH]) for (const p of (h||'').split(',')) {
+    const [k,v] = p.split('='); if (k) map[k.trim()] = parseInt(v,10);
+  }
+  const out = [];
+  for (const k of ['stt','lm','stock','tts','total']) if (map[k]!=null) {
+    out.push(`${k==='total'?'∑':k} ${map[k]<1000?map[k]+'мс':(map[k]/1000).toFixed(2)+'с'}`);
+  }
+  return '⏱ ' + out.join(' · ');
+}
+
+async function answerFromText(text, sttH) {
   try {
     const r = await fetch('/ask-text', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) });
     const intent = dec(r.headers.get('X-Intent'));
     const answer = dec(r.headers.get('X-Answer'));
+    const askH = r.headers.get('X-Timings') || '';
     if (!r.ok) {
       const detail = await r.text();
       addMsg('bot','Ошибка '+r.status+': '+detail,'').classList.add('error');
       setStatus('ошибка','var(--err)');
       return;
     }
-    let meta=''; try { const j=JSON.parse(intent); if (j&&j.action) meta='intent: '+JSON.stringify(j); } catch {}
+    let meta = fmtTimings(sttH, askH);
+    try { const j=JSON.parse(intent); if (j&&j.action) meta += '  ·  intent: '+JSON.stringify(j); } catch {}
     addMsg('bot', answer || '(пустой ответ)', meta);
     const ab = await r.arrayBuffer();
     await playAnswer(ab);
