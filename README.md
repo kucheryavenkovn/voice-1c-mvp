@@ -37,7 +37,9 @@ API. Контейнеры обращаются к нему через `host.dock
 ## Быстрый старт (PowerShell 7)
 
 ```powershell
-# 0. LM Studio: Developer → Start Server на :1234, загрузить модель
+# 0. Стартуй внешние источники на хосте:
+#    - LM Studio: Developer → Start Server на :1234, загрузить модель;
+#    - 1С: открой MCP_Toolkit.epf в нужной базе → «Встроенный сервер» → «Запустить сервер» (:6003).
 
 # 1. конфиг
 Copy-Item .env.example .env
@@ -83,6 +85,7 @@ http://localhost:8103
 | [docs/PRD.md](docs/PRD.md) | Продуктовые требования + **пошаговое воспроизведение развёртывания** (то, что делалось при сборке) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура, потоки данных, последовательность вызовов `/ask` |
 | [docs/API.md](docs/API.md) | Все HTTP-эндпоинты всех сервисов |
+| [docs/1C_INTEGRATION.md](docs/1C_INTEGRATION.md) | **Интеграция с 1С:ERP через 1C MCP Toolkit** (установка `.epf`, запрос, парсер) |
 | [stt/README.md](stt/README.md) | Сервис распознавания речи |
 | [tts/README.md](tts/README.md) | Сервис синтеза речи |
 | [mock-api/README.md](mock-api/README.md) | Заглушка API 1С |
@@ -101,11 +104,38 @@ STOCK_FALLBACK_TO_MOCK=true      # при ошибке 1С — откат на m
 ONEC_BASE_URL=http://host.docker.internal:6003/api
 ```
 
-### Запуск 1C MCP Toolkit
-1. В 1С:ERP открой `build/MCP_Toolkit.epf`, режим **«Встроенный сервер»**, «Запустить сервер».
-   Должно появиться: `Встроенный HTTP-сервер запущен на порту 6003`.
-2. Слушает `0.0.0.0:6003`, контейнеры ходят через `host.docker.internal`.
-3. Проверка из Docker: `GET /health` шлюза → `"onec": true`.
+### Запуск 1C MCP Toolkit (MCP-сервер внутри 1С)
+
+Остатки отдаёт сторонний MCP-сервер **[1C MCP Toolkit](https://github.com/ROCTUP/1c-mcp-toolkit)**
+(автор ROCTUP, лицензия GPL-3.0). Он запускается **внутри 1С** как внешняя обработка и поднимает
+HTTP-сервер — без изменения конфигурации и без публикации 1С на веб-сервере. Наш проект лишь
+обращается к его REST API (`/api/execute_query`), поэтому отдельной MPL/GPL-зависимости в коде нет.
+
+**Установка в нужной базе 1С:**
+
+1. Скачай обработку со страницы релизов тулкита:
+   [build/MCP_Toolkit.epf](https://github.com/ROCTUP/1c-mcp-toolkit/blob/main/build/MCP_Toolkit.epf)
+   (или из [Releases](https://github.com/ROCTUP/1c-mcp-toolkit/releases)).
+2. В нужной базе 1С (где есть регистр `ТоварыНаСкладах`, напр. 1С:ERP / КА / УТ):
+   **Файл → Открыть…** → выбери `MCP_Toolkit.epf`.
+3. В открывшейся форме выбери режим **«Встроенный сервер»** (без Python).
+4. При необходимости укажи порт (по умолчанию `6003`) и ID канала (`ONEC_CHANNEL`).
+5. Нажми **«Запустить сервер»**. В окне сообщений должно появиться:
+   `Встроенный HTTP-сервер запущен на порту 6003`.
+6. Не закрывай обработку, пока нужен голосовой цикл — сервер живёт в её сеансе.
+
+Проверка, что 1С видна из Docker (шлюз ходит через `host.docker.internal`):
+```powershell
+# из хоста
+Invoke-RestMethod http://127.0.0.1:6003/api/execute_query -Method Post `
+  -ContentType 'application/json' -Body '{"query":"ВЫБРАТЬ 1"}'
+# в /health шлюза должно быть "onec": true
+Invoke-RestMethod http://127.0.0.1:8103/health
+```
+
+> Если в `netstat` порт `6003` не слушает — обработка не запущена или нажата не «Запустить сервер».
+> Файервол Windows: для подключений с других машин добавь правило для `6003`; `localhost` и
+> `host.docker.internal` обычно работают без правила.
 
 Шлюз выполняет запрос к регистру `РегистрНакопления.ТоварыНаСкладах.Остатки`
 (ресурс `ВНаличииОстаток`), агрегирует сумму по складам и формирует голосовой
