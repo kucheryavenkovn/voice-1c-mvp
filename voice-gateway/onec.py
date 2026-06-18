@@ -37,6 +37,40 @@ def _sanitize(item: str) -> str:
     return s[:40]
 
 
+_CYR = re.compile(r"[А-Яа-яЁё]+")
+_morph = None
+
+
+def _lemmatize(safe: str) -> str:
+    """Нормализовать к именительному падежу ед.ч.: телевизоры→телевизор, стулья→стул,
+    молока→молоко. Лемматизируются только кириллические слова; коды/латиница/цифры
+    и артикулы не трогаются. Если pymorphy3 недоступен — возвращается как есть.
+    """
+    global _morph
+    if _morph is None:
+        try:
+            import pymorphy3
+
+            _morph = pymorphy3.MorphAnalyzer()
+        except Exception:
+            _morph = False
+    if not _morph:
+        return safe
+    out = []
+    for t in re.split(r"\s+", safe):
+        if not t:
+            continue
+        if _CYR.fullmatch(t):
+            try:
+                p = _morph.parse(t)
+                out.append(p[0].normal_form if p else t)
+            except Exception:
+                out.append(t)
+        else:
+            out.append(t)
+    return " ".join(out)
+
+
 def _like_pattern(safe: str) -> str:
     """'Телевизор SHARP' -> '%Телевизор%SHARP%'.
 
@@ -49,7 +83,7 @@ def _like_pattern(safe: str) -> str:
 
 
 def _build_query(item: str) -> str:
-    like = _like_pattern(_sanitize(item))
+    like = _like_pattern(_lemmatize(_sanitize(item)))
     return (
         "ВЫБРАТЬ\n"
         "  ТоварыНаСкладахОстатки.Склад.Наименование КАК Склад,\n"

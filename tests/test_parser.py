@@ -72,8 +72,8 @@ def test_build_query_matches_name_or_article():
 
 def test_build_query_multiword_inserts_wildcard_between_words():
     q = onec._build_query("Телевизор SHARP")
-    # each space -> %, so 'Телевизор 21 дюйм Sharp' / 'Телевизор "SHARP"' match
-    assert q.count('ВРЕГ("%Телевизор%SHARP%")') == 2  # name + article
+    # each space -> %, Cyrilric lemma lowercased; 'Телевизор 21 дюйм Sharp' matches
+    assert q.count('ВРЕГ("%телевизор%SHARP%")') == 2  # name + article
 
 
 def test_build_query_no_injection():
