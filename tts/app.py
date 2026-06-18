@@ -43,8 +43,7 @@ def tts(req: TTSRequest):
         proc = subprocess.run(
             cmd,
             input=text.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
         if proc.returncode != 0:
             raise HTTPException(
@@ -73,8 +72,7 @@ def tts_file(req: TTSRequest):
     subprocess.run(
         [PIPER, "-m", VOICE, "-f", out.name],
         input=text.encode("utf-8"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return FileResponse(out.name, media_type="audio/wav", filename="tts.wav")

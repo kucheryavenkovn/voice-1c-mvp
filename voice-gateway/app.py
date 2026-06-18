@@ -4,13 +4,12 @@ import pathlib
 import re
 import urllib.parse
 
+import onec
 import requests
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-
-import onec
 
 STT_URL = os.getenv("STT_URL", "http://stt:8000")
 TTS_URL = os.getenv("TTS_URL", "http://tts:8000")
@@ -40,9 +39,9 @@ SYSTEM_PROMPT = (
     "Передавай код как есть, цифры сохраняй цифрами.\n"
     "В остальных случаях верни:\n"
     '{"action": "unknown", "item": null}\n'
-    "Примеры: 'сколько молока?' -> {\"action\":\"get_stock\",\"item\":\"молоко\"}; "
-    "'остаток по артикулу 7777' -> {\"action\":\"get_stock\",\"item\":\"7777\"}; "
-    "'сколько по 45463728' -> {\"action\":\"get_stock\",\"item\":\"45463728\"}"
+    'Примеры: \'сколько молока?\' -> {"action":"get_stock","item":"молоко"}; '
+    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777"}; '
+    '\'сколько по 45463728\' -> {"action":"get_stock","item":"45463728"}'
 )
 
 HERE = pathlib.Path(__file__).parent
@@ -165,10 +164,7 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
         if stock and stock.get("found"):
             return stock.get("message") or f"Остаток: {stock.get('quantity')} штук."
         return (stock or {}).get("message") or f"Товар '{item}' не найден."
-    return (
-        "Я умею узнавать остатки по товарам. "
-        "Спросите, например: какой остаток по молоку?"
-    )
+    return "Я умею узнавать остатки по товарам. Спросите, например: какой остаток по молоку?"
 
 
 def orchestrate(text: str) -> tuple[bytes, dict]:
@@ -185,7 +181,7 @@ def orchestrate(text: str) -> tuple[bytes, dict]:
         tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
         tts_r.raise_for_status()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+        raise HTTPException(status_code=502, detail=f"TTS failed: {e}") from e
 
     headers = {
         "X-Question": urllib.parse.quote(text),
@@ -263,7 +259,7 @@ def ask(file: UploadFile = File(...)):
         stt_r = requests.post(f"{STT_URL}/stt", files=files, timeout=180)
         stt_r.raise_for_status()
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"STT failed: {e}")
+        raise HTTPException(status_code=502, detail=f"STT failed: {e}") from e
     text = (stt_r.json().get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="STT returned empty text")

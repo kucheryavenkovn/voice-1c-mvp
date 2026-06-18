@@ -7,6 +7,7 @@ All external dependencies (STT, TTS, LM Studio, 1C MCP Toolkit) are replaced by 
 single FakeRequests transport routed by URL, so the full /ask and /ask-text flow can
 be tested in-process — no GPU, no Docker, no 1С, no LM Studio.
 """
+
 import json
 import pathlib
 import struct
@@ -16,7 +17,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "voice-gateway"))
 
-import pytest  # noqa: E402
+import pytest
 
 
 def wav_bytes(seconds: float = 0.1, rate: int = 22050) -> bytes:
@@ -24,9 +25,14 @@ def wav_bytes(seconds: float = 0.1, rate: int = 22050) -> bytes:
     n = int(rate * seconds)
     data = b"\x00\x00" * n
     return (
-        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
-        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
-        + b"data" + struct.pack("<I", len(data)) + data
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
     )
 
 
@@ -43,7 +49,9 @@ ONEC_MULTI = (
     "  Склад1,Соковыжималка,СО-77777,2"
 )
 ONEC_EMPTY = "[0]:"
-ONEC_DECIMAL = '[1]{"Склад","Товар","Артикул","Остаток"}:\n  Западный склад,Барбарис,Арт-7777,143.25'
+ONEC_DECIMAL = (
+    '[1]{"Склад","Товар","Артикул","Остаток"}:\n  Западный склад,Барбарис,Арт-7777,143.25'
+)
 
 
 class FakeResp:
@@ -65,6 +73,7 @@ class FakeResp:
     def raise_for_status(self):
         if self.status_code >= 400:
             import requests as _r
+
             raise _r.HTTPError(f"fake HTTP {self.status_code}")
 
 
@@ -80,11 +89,15 @@ class FakeRequests:
 
     def _do(self, method, url, **kw):
         st, u = self.st, url.lower()
+        import requests as _r
+
         if "/health" in u:
             return FakeResp(200, {"ok": True})
         if method == "GET" and "/models" in u:
             return FakeResp(200, {"data": [{"id": "test-model"}]})
         if method == "POST" and "/chat/completions" in u:
+            if getattr(st, "lm_timeout", False):
+                raise _r.exceptions.ReadTimeout("fake LM timeout")
             return FakeResp(200, {"choices": [{"message": {"content": st.lm_raw}}]})
         if method == "POST" and "/stt" in u:
             if getattr(st, "stt_fail", False):
@@ -95,6 +108,8 @@ class FakeRequests:
                 return FakeResp(500, {"error": "tts down"})
             return FakeResp(200, content=st.tts_bytes)
         if method == "POST" and "/execute_query" in u:
+            if getattr(st, "onec_timeout", False):
+                raise _r.exceptions.ReadTimeout("fake 1C timeout")
             if getattr(st, "onec_fail", False):
                 return FakeResp(200, {"success": False, "error": "fake 1c error"})
             return FakeResp(200, {"success": True, "data": st.onec_data})
@@ -123,8 +138,12 @@ def gw(monkeypatch):
     st.onec_fail = False
     st.tts_bytes = wav_bytes()
     st.tts_fail = False
-    st.mock_stock = {"item": "молоко", "found": True, "quantity": 42,
-                     "message": "Остаток mock: 42."}
+    st.mock_stock = {
+        "item": "молоко",
+        "found": True,
+        "quantity": 42,
+        "message": "Остаток mock: 42.",
+    }
 
     fake = FakeRequests(st)
     monkeypatch.setattr(onec, "requests", fake)
@@ -132,6 +151,7 @@ def gw(monkeypatch):
     monkeypatch.setattr(app, "LM_MODEL", "test-model")
 
     from fastapi.testclient import TestClient
+
     with TestClient(app.app) as client:
         st.client = client
         yield st

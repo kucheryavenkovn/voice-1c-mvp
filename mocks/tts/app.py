@@ -1,4 +1,5 @@
 """Mock TTS (Piper stand-in) — returns a silent WAV sized to the text length."""
+
 import struct
 
 from fastapi import FastAPI, Response
@@ -12,9 +13,14 @@ def _silent_wav(text: str, rate: int = 22050) -> bytes:
     n = int(rate * secs)
     data = b"\x00\x00" * n
     return (
-        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
-        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
-        + b"data" + struct.pack("<I", len(data)) + data
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
     )
 
 

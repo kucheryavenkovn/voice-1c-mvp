@@ -1,7 +1,7 @@
 """Tests for the spoken-message builder, quantity formatting and Russian plurals."""
-import pytest
 
 import onec
+import pytest
 
 
 def _item(name="Молоко", article="Арт-1", qty=50, nwh=2):
@@ -20,7 +20,8 @@ def test_single_item_message():
 
 
 def test_single_item_no_article():
-    it = _item(); it["article"] = ""
+    it = _item()
+    it["article"] = ""
     m = onec._build_message([it], "молоко")
     assert m.startswith("Молоко: всего 50 единиц.")
 
@@ -42,24 +43,44 @@ def test_multi_item_message_lists_per_item():
 
 
 def test_multi_item_more_than_three():
-    items = [{"name": f"Т{i}", "article": f"A{i}", "quantity": i, "warehouses": []} for i in range(1, 6)]
+    items = [
+        {"name": f"Т{i}", "article": f"A{i}", "quantity": i, "warehouses": []} for i in range(1, 6)
+    ]
     m = onec._build_message(items, "q")
     assert "найдено 5" in m
     assert "и ещё 2 позиции" in m
 
 
-@pytest.mark.parametrize("n,word", [
-    (1, "единица"), (2, "единицы"), (3, "единицы"), (4, "единицы"), (5, "единиц"),
-    (11, "единиц"), (21, "единица"), (23, "единицы"), (25, "единиц"), (101, "единица"),
-])
+@pytest.mark.parametrize(
+    "n,word",
+    [
+        (1, "единица"),
+        (2, "единицы"),
+        (3, "единицы"),
+        (4, "единицы"),
+        (5, "единиц"),
+        (11, "единиц"),
+        (21, "единица"),
+        (23, "единицы"),
+        (25, "единиц"),
+        (101, "единица"),
+    ],
+)
 def test_plural_units(n, word):
     it = _item(qty=n, nwh=0)
     assert f"всего {n} {word}" in onec._build_message([it], "x")
 
 
-@pytest.mark.parametrize("val,exp", [
-    (480, "480"), (0, "0"), (143.25, "143.25"), (143.0, "143"), (0.5, "0.5"),
-])
+@pytest.mark.parametrize(
+    "val,exp",
+    [
+        (480, "480"),
+        (0, "0"),
+        (143.25, "143.25"),
+        (143.0, "143"),
+        (0.5, "0.5"),
+    ],
+)
 def test_format_qty(val, exp):
     assert onec._format_qty(val) == exp
 

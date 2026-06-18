@@ -1,8 +1,8 @@
 """Integration: onec.query_stock end-to-end with the 1C HTTP transport faked."""
-import pytest
 
 import onec
-from conftest import ONEC_SINGLE, ONEC_MULTI, ONEC_EMPTY, ONEC_DECIMAL
+import pytest
+from conftest import ONEC_DECIMAL, ONEC_EMPTY, ONEC_MULTI, ONEC_SINGLE
 
 
 def test_query_single_groups_warehouses(gw):
@@ -10,12 +10,12 @@ def test_query_single_groups_warehouses(gw):
     res = onec.query_stock("молоко")
     assert res["found"] is True
     assert res["source"] == "1c"
-    assert len(res["items"]) == 1               # both rows → one Товар+Артикул
+    assert len(res["items"]) == 1  # both rows → one Товар+Артикул
     it = res["items"][0]
     assert it["name"] == "Молоко 3.2%"
-    assert it["quantity"] == 50                 # 20 + 30
+    assert it["quantity"] == 50  # 20 + 30
     assert len(it["warehouses"]) == 2
-    assert res["quantity"] == 50               # single item → top quantity
+    assert res["quantity"] == 50  # single item → top quantity
     assert "всего 50" in res["message"]
 
 
@@ -24,7 +24,7 @@ def test_query_multi_no_cross_item_sum(gw):
     res = onec.query_stock("7777")
     assert res["found"] is True
     assert len(res["items"]) == 3
-    assert res["quantity"] is None              # units may differ → no sum
+    assert res["quantity"] is None  # units may differ → no sum
     assert "найдено 3" in res["message"]
 
 
@@ -44,7 +44,7 @@ def test_query_decimal_quantity(gw):
 
 
 def test_query_1c_business_error_raises(gw):
-    gw.onec_fail = True                          # 1C returns success=False
+    gw.onec_fail = True  # 1C returns success=False
     with pytest.raises(RuntimeError):
         onec.query_stock("молоко")
 

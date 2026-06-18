@@ -1,4 +1,5 @@
 """Pure-logic tests for the 1C text-table parser, sanitization and query builder."""
+
 import onec
 
 
@@ -12,7 +13,7 @@ def test_parse_header_and_simple_rows():
 
 def test_parse_quoted_with_escaped_quotes():
     # real shape: "Магазин \"Продукты\""
-    cols, rows = onec._parse_table('[1]{"Склад","Остаток"}:\n  "Магазин \\"Продукты\\"",100')
+    _, rows = onec._parse_table('[1]{"Склад","Остаток"}:\n  "Магазин \\"Продукты\\"",100')
     assert rows == [['Магазин "Продукты"', 100]]
 
 

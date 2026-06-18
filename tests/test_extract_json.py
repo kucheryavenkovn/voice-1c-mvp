@@ -1,22 +1,26 @@
 """Tests for LLM JSON extraction (markdown fences, prose, malformed) and answer builder."""
+
 import app
 
 
 def test_extract_plain_json():
     assert app.extract_json('{"action":"get_stock","item":"молоко"}') == {
-        "action": "get_stock", "item": "молоко"
+        "action": "get_stock",
+        "item": "молоко",
     }
 
 
 def test_extract_fenced_json():
     assert app.extract_json('```json\n{"action":"get_stock","item":"молоко"}\n```') == {
-        "action": "get_stock", "item": "молоко"
+        "action": "get_stock",
+        "item": "молоко",
     }
 
 
 def test_extract_json_among_prose():
     assert app.extract_json('Вот: {"action":"unknown","item":null} ок') == {
-        "action": "unknown", "item": None
+        "action": "unknown",
+        "item": None,
     }
 
 
@@ -26,14 +30,16 @@ def test_extract_empty_and_garbage():
 
 
 def test_build_answer_found_uses_message():
-    ans = app.build_answer("t", {"action": "get_stock", "item": "молоко"},
-                           {"found": True, "message": "ОСТАТОК"})
+    ans = app.build_answer(
+        "t", {"action": "get_stock", "item": "молоко"}, {"found": True, "message": "ОСТАТОК"}
+    )
     assert ans == "ОСТАТОК"
 
 
 def test_build_answer_not_found():
-    ans = app.build_answer("t", {"action": "get_stock", "item": "x"},
-                           {"found": False, "message": "не найдено"})
+    ans = app.build_answer(
+        "t", {"action": "get_stock", "item": "x"}, {"found": False, "message": "не найдено"}
+    )
     assert ans == "не найдено"
 
 

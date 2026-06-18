@@ -1,0 +1,19 @@
+# serializer version: 1
+# name: test_voice_message_snapshots[multi_five_items]
+  "По 'запрос' найдено 5: Товар1 арт A1 — 1; Товар2 арт A2 — 2; Товар3 арт A3 — 3; и ещё 2 позиции."
+# ---
+# name: test_voice_message_snapshots[multi_three_items]
+  'По \'7777\' найдено 3: Барбарис арт Арт-7777 — 210.25; Молоко "Домик в деревне" 1.5% арт Арт-777788 — 80; Соковыжималка арт СО-77777 — 66.'
+# ---
+# name: test_voice_message_snapshots[single_many_warehouses]
+  'Молоко (арт. М-1): всего 480 единиц. По складам: Склад1 1, Склад2 2, Склад3 3, Склад4 4, и ещё на 2 складах.'
+# ---
+# name: test_voice_message_snapshots[single_no_article]
+  'Сахар: всего 5 единиц.'
+# ---
+# name: test_voice_message_snapshots[single_unit_plural_1]
+  'X (арт. A): всего 1 единица.'
+# ---
+# name: test_voice_message_snapshots[single_with_article]
+  'Барбарис (конфеты) (арт. Арт-7777): всего 210.25 единиц. По складам: Западный склад 143.25, Торговый зал 27.'
+# ---

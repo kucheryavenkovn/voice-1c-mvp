@@ -1,0 +1,5 @@
+# Optional: browser/UI tests (Playwright). Local only — not installed in CI.
+# Install with:
+#   pip install -r requirements-ui.txt
+#   playwright install chromium
+pytest-playwright>=0.5

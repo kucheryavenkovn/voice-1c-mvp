@@ -46,11 +46,11 @@ def _build_query(item: str) -> str:
         "  ТоварыНаСкладахОстатки.Номенклатура.Артикул КАК Артикул,\n"
         "  СУММА(ТоварыНаСкладахОстатки.ВНаличииОстаток) КАК Остаток\n"
         "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК ТоварыНаСкладахОстатки\n"
-        'ГДЕ ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0\n'
+        "ГДЕ ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0\n"
         '  И (ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Наименование) ПОДОБНО ВРЕГ("%'
-        + safe + '%")\n'
-        '   ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("%'
-        + safe + '%"))\n'
+        + safe
+        + '%")\n'
+        '   ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("%' + safe + '%"))\n'
         "СГРУППИРОВАТЬ ПО ТоварыНаСкладахОстатки.Склад.Наименование,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Наименование,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Артикул\n"
@@ -132,7 +132,7 @@ def _format_qty(v) -> str:
     try:
         f = float(v)
         if abs(f - round(f)) < 1e-9:
-            return str(int(round(f)))
+            return str(round(f))
         return f"{f:.2f}".rstrip("0").rstrip(".")
     except Exception:
         return str(v)
@@ -151,22 +151,23 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 def _build_message(items: list, user_item: str) -> str:
     """Voice-friendly summary. One item → total + per-warehouse; many → per-item
     totals (units may differ across items, so no cross-item sum)."""
+
     def art_full(it):
         return f" (арт. {it['article']})" if it.get("article") else ""
 
     if len(items) == 1:
         it = items[0]
+        unit = _plural(it["quantity"], "единица", "единицы", "единиц")
+        head = f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])} {unit}."
+        if not it["warehouses"]:
+            return head
         top = it["warehouses"][:4]
         wh = ", ".join(f"{w['name']} {_format_qty(w['quantity'])}" for w in top)
         extra = ""
         if len(it["warehouses"]) > 4:
             r = len(it["warehouses"]) - 4
             extra = f", и ещё на {r} {_plural(r, 'складе', 'складах', 'складах')}"
-        unit = _plural(it["quantity"], "единица", "единицы", "единиц")
-        return (
-            f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])} {unit}. "
-            f"По складам: {wh}{extra}."
-        )
+        return f"{head} По складам: {wh}{extra}."
 
     parts = []
     for it in items[:3]:
@@ -287,9 +288,7 @@ def ping() -> bool:
         url = ONEC_BASE_URL.rstrip("/") + "/execute_query"
         if ONEC_CHANNEL:
             url += f"?channel={ONEC_CHANNEL}"
-        r = requests.post(
-            url, json={"query": "ВЫБРАТЬ 1", "limit": 1}, timeout=8
-        )
+        r = requests.post(url, json={"query": "ВЫБРАТЬ 1", "limit": 1}, timeout=8)
         return r.status_code == 200 and r.json().get("success") is True
     except Exception:
         return False

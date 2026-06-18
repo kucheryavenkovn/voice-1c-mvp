@@ -3,6 +3,7 @@
 Returns a fixed (configurable) transcript for any uploaded audio, so the full
 voice pipeline can be exercised in CI / on machines without a GPU.
 """
+
 import os
 
 from fastapi import FastAPI, File, UploadFile

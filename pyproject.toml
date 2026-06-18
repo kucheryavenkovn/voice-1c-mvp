@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["tests/fixtures", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = [
+    "E501",            # line length is enforced by the formatter, not the linter
+    "RUF001", "RUF002", "RUF003",  # ambiguous Cyrillic chars (Russian UI strings)
+    "B008",            # FastAPI/Pydantic idiom: defaults like `File(...)`, `Query(...)`
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]   # intentional sys.path manipulation before imports

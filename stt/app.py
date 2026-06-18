@@ -2,7 +2,7 @@ import os
 import tempfile
 
 import ctranslate2
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
 
@@ -77,7 +77,7 @@ def transcribe(file: UploadFile = File(...)):
                 beam_size=5,
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"transcribe error: {e}")
+            raise HTTPException(status_code=500, detail=f"transcribe error: {e}") from e
         text = " ".join(s.text.strip() for s in segments).strip()
         return TextOut(text=text, language=info.language)
     finally:

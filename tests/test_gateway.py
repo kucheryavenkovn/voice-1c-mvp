@@ -1,4 +1,5 @@
 """Integration: voice-gateway HTTP endpoints with STT/TTS/LM/1C all mocked."""
+
 import json
 from urllib.parse import unquote
 
@@ -51,7 +52,10 @@ def test_ask_text_article_multi(gw):
     assert r.status_code == 200
     ans = unquote(r.headers["X-Answer"])
     assert "найдено 3" in ans
-    assert r.headers["X-Question"] == "%D0%BE%D1%81%D1%82%D0%B0%D1%82%D0%BE%D0%BA%20%D0%BF%D0%BE%207777"
+    assert (
+        r.headers["X-Question"]
+        == "%D0%BE%D1%81%D1%82%D0%B0%D1%82%D0%BE%D0%BA%20%D0%BF%D0%BE%207777"
+    )
 
 
 def test_ask_text_unknown_intent(gw):
@@ -77,7 +81,7 @@ def test_ask_empty_stt_returns_400(gw):
 
 
 def test_fallback_to_mock_when_1c_down(gw):
-    gw.onec_fail = True                          # 1C error → fallback to mock-api
+    gw.onec_fail = True  # 1C error → fallback to mock-api
     r = gw.client.post("/ask-text", json={"text": "сколько молока?"})
     assert r.status_code == 200
     assert "42" in unquote(r.headers["X-Answer"])

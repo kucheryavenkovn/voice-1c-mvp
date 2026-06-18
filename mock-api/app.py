@@ -22,11 +22,26 @@ STOCK = {
 app = FastAPI(title="1C mock stock API")
 
 
+class Warehouse(BaseModel):
+    name: str
+    quantity: int | float
+
+
+class StockItem(BaseModel):
+    name: str
+    article: str = ""
+    quantity: int | float | None = None
+    warehouses: list[Warehouse] = []
+
+
 class StockResponse(BaseModel):
     item: str
     found: bool
-    quantity: int | None = None
+    quantity: int | float | None = None
+    items: list[StockItem] = []
+    warehouses: list[Warehouse] = []
     message: str
+    source: str = "mock"
 
 
 def lookup(item: str) -> StockResponse:
@@ -37,13 +52,26 @@ def lookup(item: str) -> StockResponse:
             item=item,
             found=True,
             quantity=qty,
+            items=[
+                StockItem(
+                    name=item,
+                    article="",
+                    quantity=qty,
+                    warehouses=[Warehouse(name="(mock)", quantity=qty)],
+                )
+            ],
+            warehouses=[Warehouse(name="(mock)", quantity=qty)],
             message=f"Остаток по товару '{item}': {qty} штук.",
+            source="mock",
         )
     return StockResponse(
         item=item,
         found=False,
         quantity=None,
+        items=[],
+        warehouses=[],
         message=f"Товар '{item}' не найден в базе 1С.",
+        source="mock",
     )
 
 
