@@ -23,6 +23,7 @@ PARSER_CASES = [
     ("empty_result", [], 0),
     ("barbaris_decimal", ["Склад", "Товар", "Артикул", "Остаток"], 5),
     ("catalog_name_article", ["Наименование", "Артикул"], 6),
+    ("tv_sharp_multiword", ["Склад", "Товар", "Артикул", "Остаток"], 3),
 ]
 
 
@@ -79,3 +80,16 @@ def test_query_barbaris_single_item_real(gw):
     assert res["items"][0]["quantity"] == 210.25
     assert res["quantity"] == 210.25
     assert "210.25" in res["message"]
+
+
+def test_query_tv_sharp_multiword_real(gw):
+    """'Телевизор SHARP' must match 'Телевизор "SHARP"' (extra words/quotes between)."""
+    gw.onec_data = _read("tv_sharp_multiword")
+    res = onec.query_stock("Телевизор SHARP")
+    assert res["found"] is True
+    assert len(res["items"]) == 1  # same Товар+Артикул in all rows
+    it = res["items"][0]
+    assert it["name"] == 'Телевизор "SHARP"'
+    assert it["article"] == "Т-123456"
+    assert it["quantity"] == 127  # 121 + 4 + 2
+    assert res["quantity"] == 127

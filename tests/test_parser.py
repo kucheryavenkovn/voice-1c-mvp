@@ -56,6 +56,12 @@ def test_sanitize_truncates():
     assert len(onec._sanitize("x" * 100)) <= 40
 
 
+def test_like_pattern_single_and_multiword():
+    assert onec._like_pattern("молоко") == "%молоко%"
+    assert onec._like_pattern("Телевизор SHARP") == "%Телевизор%SHARP%"
+    assert onec._like_pattern("a  b   c") == "%a%b%c%"
+
+
 def test_build_query_matches_name_or_article():
     q = onec._build_query("7777")
     assert "Номенклатура.Наименование" in q
@@ -64,11 +70,17 @@ def test_build_query_matches_name_or_article():
     assert 'ВРЕГ("%7777%")' in q
 
 
+def test_build_query_multiword_inserts_wildcard_between_words():
+    q = onec._build_query("Телевизор SHARP")
+    # each space -> %, so 'Телевизор 21 дюйм Sharp' / 'Телевизор "SHARP"' match
+    assert q.count('ВРЕГ("%Телевизор%SHARP%")') == 2  # name + article
+
+
 def test_build_query_no_injection():
     raw = '50%" AND _ 1=1 --'
     safe = onec._sanitize(raw)
     for bad in ("%", "_", '"', "\\"):
         assert bad not in safe
     q = onec._build_query(raw)
-    # sanitized token wrapped only by our own %...% wildcards, twice (name + article)
-    assert q.count('ВРЕГ("%' + safe + '%")') == 2
+    like = onec._like_pattern(safe)  # only our own %...% wildcards
+    assert q.count('ВРЕГ("' + like + '")') == 2
