@@ -1,0 +1,17 @@
+# конфигурация окружения (секреты/пути)
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# артефакты тестов (вывод пайплайна)
+samples/*
+!samples/.gitkeep
+
+# временные файлы PS-скриптов
+*.headers
+samples/.h*
+
+# локальный runtime VSCode (содержит токен агента) — не коммитить
+.vscode/cdt-agent-bridge.json

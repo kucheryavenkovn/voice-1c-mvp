@@ -1,0 +1,61 @@
+name: voice-1c-mvp
+
+services:
+  stt:
+    build: ./stt
+    image: v1c/stt
+    container_name: v1c-stt
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-medium}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-ru}
+    ports:
+      - "${PORT_STT:-8100}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  tts:
+    build: ./tts
+    image: v1c/tts
+    container_name: v1c-tts
+    environment:
+      PIPER_VOICE: ${PIPER_VOICE:-/voices/ru_RU-dmitri-medium.onnx}
+    ports:
+      - "${PORT_TTS:-8101}:8000"
+    restart: unless-stopped
+
+  mock-api:
+    build: ./mock-api
+    image: v1c/mock-api
+    container_name: v1c-mock-api
+    ports:
+      - "${PORT_MOCK:-8102}:8000"
+    restart: unless-stopped
+
+  voice-gateway:
+    build: ./voice-gateway
+    image: v1c/gateway
+    container_name: v1c-gateway
+    environment:
+      STT_URL: http://stt:8000
+      TTS_URL: http://tts:8000
+      STOCK_API_URL: http://mock-api:8000/api/stock
+      LM_BASE_URL: ${LM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LM_API_KEY: ${LM_API_KEY:-lm-studio}
+      LM_MODEL: ${LM_MODEL:-auto}
+    ports:
+      - "${PORT_GATEWAY:-8103}:8000"
+    depends_on:
+      - stt
+      - tts
+      - mock-api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
