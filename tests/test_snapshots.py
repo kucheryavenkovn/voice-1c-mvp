@@ -69,3 +69,37 @@ def test_voice_message_snapshots(snapshot):
     for key, (items, user_item) in CASES.items():
         msg = onec._build_message(items, user_item)
         assert msg == snapshot(name=key), f"wording drift for {key}"
+
+
+LIST_CASES = {
+    "list_three": (
+        [
+            {
+                "name": "Сахарный песок (весовой)",
+                "article": "45463728",
+                "quantity": 385,
+                "warehouses": [],
+            },
+            {
+                "name": "Сахарный песок в пачках",
+                "article": "Арт-88888",
+                "quantity": 110,
+                "warehouses": [],
+            },
+            {
+                "name": "Сахарный песок (в упаковках)",
+                "article": "",
+                "quantity": 95,
+                "warehouses": [],
+            },
+        ],
+        "сахар",
+    ),
+    "list_empty": ([], "xyz"),
+}
+
+
+def test_list_message_snapshots(snapshot):
+    for key, (items, user_item) in LIST_CASES.items():
+        msg = onec._build_list_message(items, user_item)
+        assert msg == snapshot(name=key), f"wording drift for {key}"

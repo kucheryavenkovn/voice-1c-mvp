@@ -32,19 +32,23 @@ LM_MODEL = os.getenv("LM_MODEL", "auto")
 SYSTEM_PROMPT = (
     "Ты — складской ассистент, интегрированный с 1С. "
     "Определи намерение пользователя и ответь СТРОГО валидным JSON без markdown и пояснений.\n"
-    "Если спрашивают об остатке, количестве, наличии товара — верни:\n"
+    "1) Если спрашивают остаток/количество/наличие товара — верни:\n"
     '{"action": "get_stock", "item": "<товар>"}\n'
+    "2) Если просят ПЕРЕЧИСЛИТЬ товары по названию, по которым есть остатки "
+    "('по каким товарам ... есть остатки', 'какие ... есть в наличии', 'список товаров ...') — верни:\n"
+    '{"action": "list_stock", "item": "<товар>"}\n'
     "В поле item подставь то, чем пользователь обозначил товар: НАИМЕНОВАНИЕ "
     "(например 'молоко') ИЛИ АРТИКУЛ/КОД (например 'Арт-7777', '45463728', '7777'), "
     "в том числе когда артикул назван без слова «артикул» — просто цифрами/кодом. "
     "Передавай код как есть, цифры сохраняй цифрами. "
     "Название приведи к именительному падежу единственного числа "
     "(телевизоры→телевизор, стулья→стул, молока→молоко).\n"
-    "В остальных случаях верни:\n"
+    "3) В остальных случаях верни:\n"
     '{"action": "unknown", "item": null}\n'
     'Примеры: \'сколько молока?\' -> {"action":"get_stock","item":"молоко"}; '
-    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777"}; '
-    '\'сколько по 45463728\' -> {"action":"get_stock","item":"45463728"}'
+    "'по каким товарам с названием сахар есть остатки' -> "
+    '{"action":"list_stock","item":"сахар"}; '
+    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777"}.'
 )
 
 HERE = pathlib.Path(__file__).parent
@@ -163,7 +167,11 @@ def _mock_stock(item: str) -> dict:
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     action = (intent or {}).get("action")
     item = (intent or {}).get("item")
-    if action == "get_stock":
+    if action in ("get_stock", "list_stock"):
+        if action == "list_stock":
+            if stock and stock.get("items") is not None:
+                return onec._build_list_message(stock["items"], item)
+            return (stock or {}).get("message") or f"По '{item}' товаров с остатком нет."
         if stock and stock.get("found"):
             return stock.get("message") or f"Остаток: {stock.get('quantity')} штук."
         return (stock or {}).get("message") or f"Товар '{item}' не найден."
@@ -178,7 +186,7 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
 
     stock = None
     item = (intent or {}).get("item")
-    if (intent or {}).get("action") == "get_stock" and item:
+    if (intent or {}).get("action") in ("get_stock", "list_stock") and item:
         t_stock = metrics.ms()
         try:
             stock = call_stock_api(item)

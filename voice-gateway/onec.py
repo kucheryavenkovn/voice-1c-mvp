@@ -224,6 +224,26 @@ def _build_message(items: list, user_item: str) -> str:
     return f"По '{user_item}' найдено {len(items)}: {s}{extra}."
 
 
+def _build_list_message(items: list, user_item: str) -> str:
+    """Enumerate which items matching the query have stock (name + article + total).
+    For 'по каким товарам с наименованием сахар есть остатки'."""
+    if not items:
+        return f"По '{user_item}' товаров с остатком нет."
+    cap = 6
+    parts = []
+    for it in items[:cap]:
+        a = f" (арт. {it['article']})" if it.get("article") else ""
+        parts.append(f"{it['name']}{a} — {_format_qty(it['quantity'])}")
+    s = "; ".join(parts)
+    extra = ""
+    if len(items) > cap:
+        r = len(items) - cap
+        extra = f"; и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
+    n = len(items)
+    pos = _plural(n, "позиция", "позиции", "позиций")
+    return f"Товары с остатком по '{user_item}' ({n} {pos}): {s}{extra}."
+
+
 def query_stock(item: str) -> dict:
     """Вернуть остатки товара по складам из 1С.
 

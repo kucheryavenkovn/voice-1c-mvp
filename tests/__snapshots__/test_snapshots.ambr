@@ -1,4 +1,10 @@
 # serializer version: 1
+# name: test_list_message_snapshots[list_empty]
+  "По 'xyz' товаров с остатком нет."
+# ---
+# name: test_list_message_snapshots[list_three]
+  "Товары с остатком по 'сахар' (3 позиции): Сахарный песок (весовой) (арт. 45463728) — 385; Сахарный песок в пачках (арт. Арт-88888) — 110; Сахарный песок (в упаковках) — 95."
+# ---
 # name: test_voice_message_snapshots[multi_five_items]
   "По 'запрос' найдено 5: Товар1 арт A1 — 1; Товар2 арт A2 — 2; Товар3 арт A3 — 3; и ещё 2 позиции."
 # ---
