@@ -51,7 +51,9 @@ def test_ask_text_article_multi(gw):
     r = gw.client.post("/ask-text", json={"text": "остаток по 7777"})
     assert r.status_code == 200
     ans = unquote(r.headers["X-Answer"])
-    assert "найдено 3" in ans
+    # heterogeneous units (кг + шт) → per-unit subtotals, no 'всего' sum
+    assert "10 кг" in ans and "7 шт" in ans
+    assert "всего" not in ans
     assert (
         r.headers["X-Question"]
         == "%D0%BE%D1%81%D1%82%D0%B0%D1%82%D0%BE%D0%BA%20%D0%BF%D0%BE%207777"

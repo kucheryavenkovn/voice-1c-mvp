@@ -30,6 +30,7 @@ class Warehouse(BaseModel):
 class StockItem(BaseModel):
     name: str
     article: str = ""
+    unit: str = ""
     quantity: int | float | None = None
     warehouses: list[Warehouse] = []
 
@@ -56,6 +57,7 @@ def lookup(item: str) -> StockResponse:
                 StockItem(
                     name=item,
                     article="",
+                    unit="шт",
                     quantity=qty,
                     warehouses=[Warehouse(name="(mock)", quantity=qty)],
                 )

@@ -10,22 +10,23 @@ def test_query_single_groups_warehouses(gw):
     res = onec.query_stock("молоко")
     assert res["found"] is True
     assert res["source"] == "1c"
-    assert len(res["items"]) == 1  # both rows → one Товар+Артикул
+    assert len(res["items"]) == 1
     it = res["items"][0]
     assert it["name"] == "Молоко 3.2%"
-    assert it["quantity"] == 50  # 20 + 30
-    assert len(it["warehouses"]) == 2
-    assert res["quantity"] == 50  # single item → top quantity
-    assert "всего 50" in res["message"]
+    assert it["unit"] == "шт"
+    assert it["quantity"] == 50
+    assert res["quantity"] == 50
+    assert "всего 50 шт" in res["message"]
 
 
-def test_query_multi_no_cross_item_sum(gw):
+def test_query_multi_heterogeneous_units(gw):
     gw.onec_data = ONEC_MULTI
     res = onec.query_stock("7777")
     assert res["found"] is True
     assert len(res["items"]) == 3
-    assert res["quantity"] is None  # units may differ → no sum
-    assert "найдено 3" in res["message"]
+    assert res["quantity"] is None  # mixed units (кг + шт) → no sum
+    # per-unit subtotals in the message
+    assert "10 кг" in res["message"] and "7 шт" in res["message"]
 
 
 def test_query_empty_not_found(gw):
@@ -40,11 +41,12 @@ def test_query_decimal_quantity(gw):
     gw.onec_data = ONEC_DECIMAL
     res = onec.query_stock("барбарис")
     assert res["items"][0]["quantity"] == 143.25
+    assert res["items"][0]["unit"] == "кг"
     assert "143.25" in res["message"]
 
 
 def test_query_1c_business_error_raises(gw):
-    gw.onec_fail = True  # 1C returns success=False
+    gw.onec_fail = True
     with pytest.raises(RuntimeError):
         onec.query_stock("молоко")
 

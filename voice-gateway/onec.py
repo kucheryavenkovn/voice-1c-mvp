@@ -89,6 +89,7 @@ def _build_query(item: str) -> str:
         "  ТоварыНаСкладахОстатки.Склад.Наименование КАК Склад,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Наименование КАК Товар,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Артикул КАК Артикул,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.ЕдиницаИзмерения.Наименование КАК Ед,\n"
         "  СУММА(ТоварыНаСкладахОстатки.ВНаличииОстаток) КАК Остаток\n"
         "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК ТоварыНаСкладахОстатки\n"
         "ГДЕ ТоварыНаСкладахОстатки.ВНаличииОстаток <> 0\n"
@@ -96,7 +97,8 @@ def _build_query(item: str) -> str:
         '   ИЛИ ВРЕГ(ТоварыНаСкладахОстатки.Номенклатура.Артикул) ПОДОБНО ВРЕГ("' + like + '"))\n'
         "СГРУППИРОВАТЬ ПО ТоварыНаСкладахОстатки.Склад.Наименование,\n"
         "  ТоварыНаСкладахОстатки.Номенклатура.Наименование,\n"
-        "  ТоварыНаСкладахОстатки.Номенклатура.Артикул\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.Артикул,\n"
+        "  ТоварыНаСкладахОстатки.Номенклатура.ЕдиницаИзмерения.Наименование\n"
         "УПОРЯДОЧИТЬ ПО Остаток УБЫВ"
     )
 
@@ -191,17 +193,26 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
+def _unit_of(it: dict) -> str:
+    return it.get("unit") or ""
+
+
 def _build_message(items: list, user_item: str) -> str:
-    """Voice-friendly summary. One item → total + per-warehouse; many → per-item
-    totals (units may differ across items, so no cross-item sum)."""
+    """Voice-friendly summary for get_stock ('сколько всего').
+
+    One item → total + per-warehouse. Several items with the SAME unit → grand total
+    (TVs: 137 шт). Several items with DIFFERENT units → subtotals per unit
+    (сахар: 385 кг + 205 упак), because cross-unit sum is meaningless.
+    """
 
     def art_full(it):
         return f" (арт. {it['article']})" if it.get("article") else ""
 
     if len(items) == 1:
         it = items[0]
-        unit = _plural(it["quantity"], "единица", "единицы", "единиц")
-        head = f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])} {unit}."
+        u = _unit_of(it)
+        ustr = f" {u}" if u else f" {_plural(it['quantity'], 'единица', 'единицы', 'единиц')}"
+        head = f"{it['name']}{art_full(it)}: всего {_format_qty(it['quantity'])}{ustr}."
         if not it["warehouses"]:
             return head
         top = it["warehouses"][:4]
@@ -212,20 +223,41 @@ def _build_message(items: list, user_item: str) -> str:
             extra = f", и ещё на {r} {_plural(r, 'складе', 'складах', 'складах')}"
         return f"{head} По складам: {wh}{extra}."
 
-    parts = []
-    for it in items[:3]:
-        a = f" арт {it['article']}" if it.get("article") else ""
-        parts.append(f"{it['name']}{a} — {_format_qty(it['quantity'])}")
-    s = "; ".join(parts)
-    extra = ""
-    if len(items) > 3:
-        r = len(items) - 3
-        extra = f"; и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
-    return f"По '{user_item}' найдено {len(items)}: {s}{extra}."
+    units = []
+    for it in items:
+        u = _unit_of(it)
+        if u and u not in units:
+            units.append(u)
+
+    if len(units) <= 1:
+        # homogeneous units → meaningful grand total
+        total = sum(it["quantity"] for it in items)
+        ustr = f" {units[0]}" if units else ""
+        brief = ", ".join(f"{it['name']} {_format_qty(it['quantity'])}" for it in items[:4])
+        extra = ""
+        if len(items) > 4:
+            r = len(items) - 4
+            extra = f", и ещё {r} {_plural(r, 'позиция', 'позиции', 'позиций')}"
+        n = len(items)
+        pos = _plural(n, "позиция", "позиции", "позиций")
+        return (
+            f"Остаток по '{user_item}': всего {_format_qty(total)}{ustr} "
+            f"({n} {pos}: {brief}{extra})."
+        )
+
+    # heterogeneous units → subtotals per unit
+    sub = {}
+    for it in items:
+        u = _unit_of(it) or "?"
+        sub[u] = sub.get(u, 0) + it["quantity"]
+    parts = [f"{_format_qty(v)} {u}" for u, v in sub.items()]
+    n = len(items)
+    pos = _plural(n, "позиция", "позиции", "позиций")
+    return f"Остаток по '{user_item}': " + " + ".join(parts) + f" ({n} {pos})."
 
 
 def _build_list_message(items: list, user_item: str) -> str:
-    """Enumerate which items matching the query have stock (name + article + total).
+    """Enumerate which items matching the query have stock (name + article + qty + unit).
     For 'по каким товарам с наименованием сахар есть остатки'."""
     if not items:
         return f"По '{user_item}' товаров с остатком нет."
@@ -233,7 +265,8 @@ def _build_list_message(items: list, user_item: str) -> str:
     parts = []
     for it in items[:cap]:
         a = f" (арт. {it['article']})" if it.get("article") else ""
-        parts.append(f"{it['name']}{a} — {_format_qty(it['quantity'])}")
+        u = f" {_unit_of(it)}" if _unit_of(it) else ""
+        parts.append(f"{it['name']}{a} — {_format_qty(it['quantity'])}{u}")
     s = "; ".join(parts)
     extra = ""
     if len(items) > cap:
@@ -273,18 +306,19 @@ def query_stock(item: str) -> dict:
         raise RuntimeError(f"1C execute_query error: {body.get('error')}")
 
     _cols, rows = _parse_table(body.get("data", ""))
-    # rows: [Склад, Товар, Артикул, Остаток]  (Артикул may be None)
+    # rows: [Склад, Товар, Артикул, Ед, Остаток]  (Артикул/Ед may be None/empty)
     items_map = {}
     order = []
     for row in rows:
-        if len(row) < 4 or not row[3]:
+        if len(row) < 5 or not row[4]:
             continue
-        skl, tov, art, qty = row[0], row[1], row[2], row[3]
+        skl, tov, art, unit, qty = row[0], row[1], row[2], row[3], row[4]
         art_s = "" if art is None else str(art)
-        key = (str(tov), art_s)
+        unit_s = "" if unit is None else str(unit)
+        key = (str(tov), art_s, unit_s)
         it = items_map.get(key)
         if it is None:
-            it = {"name": str(tov), "article": art_s, "quantity": 0, "wh": {}}
+            it = {"name": str(tov), "article": art_s, "unit": unit_s, "quantity": 0, "wh": {}}
             items_map[key] = it
             order.append(key)
         it["quantity"] += qty
@@ -314,6 +348,7 @@ def query_stock(item: str) -> dict:
             {
                 "name": it["name"],
                 "article": it["article"],
+                "unit": it["unit"],
                 "quantity": it["quantity"],
                 "warehouses": wh,
             }

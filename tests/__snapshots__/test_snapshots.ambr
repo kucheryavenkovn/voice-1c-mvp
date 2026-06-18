@@ -3,23 +3,23 @@
   "По 'xyz' товаров с остатком нет."
 # ---
 # name: test_list_message_snapshots[list_three]
-  "Товары с остатком по 'сахар' (3 позиции): Сахарный песок (весовой) (арт. 45463728) — 385; Сахарный песок в пачках (арт. Арт-88888) — 110; Сахарный песок (в упаковках) — 95."
+  "Товары с остатком по 'сахар' (3 позиции): Сахарный песок (весовой) (арт. 45463728) — 385 кг; Сахарный песок в пачках (арт. Арт-88888) — 110 упак; Сахарный песок (в упаковках) — 95 упак."
 # ---
-# name: test_voice_message_snapshots[multi_five_items]
-  "По 'запрос' найдено 5: Товар1 арт A1 — 1; Товар2 арт A2 — 2; Товар3 арт A3 — 3; и ещё 2 позиции."
+# name: test_voice_message_snapshots[multi_heterogeneous_subtotals]
+  "Остаток по 'сахар': 385 кг + 205 упак (3 позиции)."
 # ---
-# name: test_voice_message_snapshots[multi_three_items]
-  'По \'7777\' найдено 3: Барбарис арт Арт-7777 — 210.25; Молоко "Домик в деревне" 1.5% арт Арт-777788 — 80; Соковыжималка арт СО-77777 — 66.'
+# name: test_voice_message_snapshots[multi_homogeneous_total]
+  "Остаток по 'телевизор': всего 137 шт (2 позиции: Телевизор SHARP 127, Телевизор JVC 10)."
 # ---
 # name: test_voice_message_snapshots[single_many_warehouses]
-  'Молоко (арт. М-1): всего 480 единиц. По складам: Склад1 1, Склад2 2, Склад3 3, Склад4 4, и ещё на 2 складах.'
+  'Молоко (арт. М-1): всего 480 шт. По складам: Склад1 1, Склад2 2, Склад3 3, Склад4 4, и ещё на 2 складах.'
 # ---
 # name: test_voice_message_snapshots[single_no_article]
-  'Сахар: всего 5 единиц.'
+  'Сахар: всего 5 кг.'
 # ---
-# name: test_voice_message_snapshots[single_unit_plural_1]
+# name: test_voice_message_snapshots[single_plural_no_unit]
   'X (арт. A): всего 1 единица.'
 # ---
-# name: test_voice_message_snapshots[single_with_article]
-  'Барбарис (конфеты) (арт. Арт-7777): всего 210.25 единиц. По складам: Западный склад 143.25, Торговый зал 27.'
+# name: test_voice_message_snapshots[single_with_article_unit]
+  'Барбарис (конфеты) (арт. Арт-7777): всего 210.25 кг. По складам: Западный склад 143.25, Торговый зал 27.'
 # ---
