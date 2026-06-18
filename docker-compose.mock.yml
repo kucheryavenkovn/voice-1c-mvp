@@ -1,0 +1,24 @@
+# Mock STT/TTS override for docker-compose
+
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d --build
+#
+# Replaces the GPU faster-whisper (stt) and Piper (tts) services with tiny CPU
+# stubs (./mocks/stt, ./mocks/tts). Same service names / container names / network
+# aliases, so voice-gateway keeps working unchanged. GPU reservation is removed,
+# so this runs anywhere (including CI / machines without NVIDIA).
+
+services:
+  stt:
+    build: ./mocks/stt
+    image: v1c/mock-stt
+    container_name: v1c-stt
+    environment:
+      MOCK_STT_TEXT: ${MOCK_STT_TEXT:-сколько у нас молока?}
+    deploy: !reset null
+
+  tts:
+    build: ./mocks/tts
+    image: v1c/mock-tts
+    container_name: v1c-tts
+    deploy: !reset null

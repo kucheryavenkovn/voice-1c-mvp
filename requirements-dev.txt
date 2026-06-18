@@ -1,0 +1,4 @@
+# тесты (pytest). Версии — без жёстких пинов, чтобы идти с Python 3.11/3.12/3.14.
+pytest>=8
+httpx>=0.27          # для FastAPI TestClient
+pytest-cov>=5

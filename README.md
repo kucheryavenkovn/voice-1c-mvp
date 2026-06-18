@@ -101,6 +101,7 @@ pure-frontend, внешних зависимостей нет.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Архитектура, потоки данных, последовательность вызовов `/ask` |
 | [docs/API.md](docs/API.md) | Все HTTP-эндпоинты всех сервисов |
 | [docs/1C_INTEGRATION.md](docs/1C_INTEGRATION.md) | **Интеграция с 1С:ERP через 1C MCP Toolkit** (установка `.epf`, запрос, парсер) |
+| [docs/TESTING.md](docs/TESTING.md) | Тесты: pytest (unit+integration), mock-стек, live |
 | [stt/README.md](stt/README.md) | Сервис распознавания речи |
 | [tts/README.md](tts/README.md) | Сервис синтеза речи |
 | [mock-api/README.md](mock-api/README.md) | Заглушка API 1С |

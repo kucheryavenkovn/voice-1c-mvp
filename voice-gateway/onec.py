@@ -27,8 +27,12 @@ ONEC_TIMEOUT = int(os.getenv("ONEC_TIMEOUT", "30"))
 
 
 def _sanitize(item: str) -> str:
-    """Оставить буквы/цифры/пробелы/дефис — безопасно для ПОДОБНО."""
-    s = re.sub(r"[^\w\s\-]", " ", item or "", flags=re.UNICODE)
+    """Оставить буквы/цифры/пробелы/дефис — безопасно для ПОДОБНО.
+
+    `%` и `_` — wildcards 1C ПОДОБНО, `"`/`\\` рвут строковый литерал → вырезаем.
+    """
+    s = re.sub(r"[_%\"\\]", " ", item or "", flags=re.UNICODE)
+    s = re.sub(r"[^\w\s\-]", " ", s, flags=re.UNICODE)
     s = re.sub(r"\s+", " ", s).strip()
     return s[:40]
 

@@ -1,0 +1,9 @@
+[run]
+branch = True
+source = voice-gateway
+
+[report]
+omit =
+    */tests/*
+    */mocks/*
+show_missing = True
