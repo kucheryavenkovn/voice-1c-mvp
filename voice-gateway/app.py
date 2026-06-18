@@ -10,9 +10,20 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import onec
+
 STT_URL = os.getenv("STT_URL", "http://stt:8000")
 TTS_URL = os.getenv("TTS_URL", "http://tts:8000")
 STOCK_API_URL = os.getenv("STOCK_API_URL", "http://mock-api:8000/api/stock")
+
+# Источник остатков: "1c" (1C MCP Toolkit, REST) или "mock" (mock-api контейнер)
+STOCK_BACKEND = os.getenv("STOCK_BACKEND", "1c").lower()
+STOCK_FALLBACK_TO_MOCK = os.getenv("STOCK_FALLBACK_TO_MOCK", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 LM_BASE_URL = os.getenv("LM_BASE_URL", "http://host.docker.internal:1234/v1")
 LM_API_KEY = os.getenv("LM_API_KEY", "lm-studio")
@@ -104,10 +115,36 @@ def lm_intent(text: str) -> tuple[dict | None, str]:
 
 
 def call_stock_api(item: str) -> dict:
-    """Единственная точка интеграции с 1С. Заменить на 1CKit/MCP get_stock."""
+    """Получить остатки товара. Источник определяется STOCK_BACKEND:
+    '1c' — 1C MCP Toolkit (REST /api/execute_query), 'mock' — заглушка mock-api.
+    При STOCK_FALLBACK_TO_MOCK=true и ошибке 1С — откат на mock.
+    """
+    if STOCK_BACKEND == "1c":
+        try:
+            return onec.query_stock(item)
+        except Exception as e:
+            print(f"[gateway] 1C stock failed: {e}", flush=True)
+            if STOCK_FALLBACK_TO_MOCK:
+                result = _mock_stock(item)
+                result["source"] = f"mock(fallback: {e.__class__.__name__})"
+                return result
+            return {
+                "item": item,
+                "found": False,
+                "quantity": None,
+                "warehouses": [],
+                "message": f"Не удалось получить остаток из 1С: {e}",
+                "source": "1c",
+            }
+    return _mock_stock(item)
+
+
+def _mock_stock(item: str) -> dict:
     r = requests.get(STOCK_API_URL, params={"item": item}, timeout=10)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    data.setdefault("source", "mock")
+    return data
 
 
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
@@ -161,6 +198,9 @@ def health():
         "ok": True,
         "stt": probe(STT_URL),
         "tts": probe(TTS_URL),
+        "stock_backend": STOCK_BACKEND,
+        "onec": onec.ping() if STOCK_BACKEND == "1c" else None,
+        "onec_base_url": onec.ONEC_BASE_URL,
         "lm_base_url": LM_BASE_URL,
         "lm_model": LM_MODEL,
     }

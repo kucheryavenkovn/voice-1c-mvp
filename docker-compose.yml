@@ -47,6 +47,11 @@ services:
       STT_URL: http://stt:8000
       TTS_URL: http://tts:8000
       STOCK_API_URL: http://mock-api:8000/api/stock
+      STOCK_BACKEND: ${STOCK_BACKEND:-1c}
+      STOCK_FALLBACK_TO_MOCK: ${STOCK_FALLBACK_TO_MOCK:-true}
+      ONEC_BASE_URL: ${ONEC_BASE_URL:-http://host.docker.internal:6003/api}
+      ONEC_CHANNEL: ${ONEC_CHANNEL:-}
+      ONEC_TIMEOUT: ${ONEC_TIMEOUT:-30}
       LM_BASE_URL: ${LM_BASE_URL:-http://host.docker.internal:1234/v1}
       LM_API_KEY: ${LM_API_KEY:-lm-studio}
       LM_MODEL: ${LM_MODEL:-auto}

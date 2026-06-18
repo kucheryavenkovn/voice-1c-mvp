@@ -90,11 +90,31 @@ http://localhost:8103
 
 ---
 
-## Где заменить mock на реальную 1С
+## Источник остатков: реальная 1С или mock
 
-`voice-gateway/app.py`, функция `call_stock_api(item)` — единственная точка интеграции.
-Сейчас идёт в `STOCK_API_URL=http://mock-api:8000/api/stock`. Замени на вызов своего
-1CKit / MCP-tool `get_stock`. Контракт — в [mock-api/README.md](mock-api/README.md).
+По умолчанию шлюз берёт остатки из **1С:ERP через [1C MCP Toolkit](https://github.com/ROCTUP/1c-mcp-toolkit)** (REST `/api/execute_query`), mock-API используется как фоллбэк для тестов.
+
+Переключатель — в `.env`:
+```env
+STOCK_BACKEND=1c                 # 1c | mock
+STOCK_FALLBACK_TO_MOCK=true      # при ошибке 1С — откат на mock-api
+ONEC_BASE_URL=http://host.docker.internal:6003/api
+```
+
+### Запуск 1C MCP Toolkit
+1. В 1С:ERP открой `build/MCP_Toolkit.epf`, режим **«Встроенный сервер»**, «Запустить сервер».
+   Должно появиться: `Встроенный HTTP-сервер запущен на порту 6003`.
+2. Слушает `0.0.0.0:6003`, контейнеры ходят через `host.docker.internal`.
+3. Проверка из Docker: `GET /health` шлюза → `"onec": true`.
+
+Шлюз выполняет запрос к регистру `РегистрНакопления.ТоварыНаСкладах.Остатки`
+(ресурс `ВНаличииОстаток`), агрегирует сумму по складам и формирует голосовой
+ответ: «Остаток 'молоко': всего 480 единиц. По складам: Торговый зал 150, …».
+Подробности: [docs/1C_INTEGRATION.md](docs/1C_INTEGRATION.md).
+
+`call_stock_api(item)` в `voice-gateway/app.py` — точка замены/расширения логики
+(например, учитывать склад,_series, единицы измерения). Контракт остаточного JSON —
+в [mock-api/README.md](mock-api/README.md).
 
 ---
 

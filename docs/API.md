@@ -9,8 +9,12 @@ HTML-страница голосового веб-чата.
 
 ### `GET /health`
 ```json
-{ "ok": true, "stt": true, "tts": true, "lm_base_url": "...", "lm_model": "auto" }
+{ "ok": true, "stt": true, "tts": true,
+  "stock_backend": "1c", "onec": true,
+  "onec_base_url": "http://host.docker.internal:6003/api",
+  "lm_base_url": "...", "lm_model": "auto" }
 ```
+`stock_backend` — `1c` или `mock`; `onec` — доступность 1C MCP Toolkit.
 
 ### `POST /ask` — полный голосовой цикл
 multipart/form-data, поле **`file`** = аудио (wav/webm/ogg/mp3).
@@ -94,3 +98,14 @@ multipart, поле `file`. Возвращает `{"text": "...", "language": "r
 Из контейнеров: `http://host.docker.internal:1234/v1`.
 - `GET /models` — список загруженных моделей;
 - `POST /chat/completions` — OpenAI-совместимый чат (использует шлюз).
+
+---
+
+## 1C MCP Toolkit — `http://localhost:6003/api` (на хосте, REST)
+
+Из контейнеров: `http://host.docker.internal:6003/api`. Шлюз использует:
+- `POST /api/execute_query` — body `{"query": "<запрос 1С>", "limit": 50}`,
+  ответ `{"success": true, "data": "<значение-таблица>"}`.
+
+Полный набор эндпоинтов тулкита — в [docs/1C_INTEGRATION.md](1C_INTEGRATION.md)
+и в репозитории [ROCTUP/1c-mcp-toolkit](https://github.com/ROCTUP/1c-mcp-toolkit).

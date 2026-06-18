@@ -6,9 +6,10 @@
 ┌─────────────────────────── ХОСТ (Windows) ───────────────────────────┐
 │                                                                       │
 │   LM Studio  ──:1234──►  OpenAI-compatible API  (google/gemma-4-e4b)  │
+│   1C:ERP + MCP Toolkit ──:6003──► REST /api/execute_query             │
 │                                                                       │
 └──────────────────────────────────┬────────────────────────────────────┘
-                                   │ host.docker.internal:1234
+                                   │ host.docker.internal:{1234,6003}
 ┌──────────────────────── СЕТЬ DOCKER (voice-1c-mvp_default) ───────────┐
 │                                                                       │
 │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐            │
@@ -18,13 +19,11 @@
 │   │  веб-чат /   │    └──────────────┘    └──────────────┘            │
 │   │  /ask /ask-  │           ▲                   ▲                     │
 │   │  text        │           │                   │                     │
-│   │              │───► ┌──────────────┐          │                     │
-│   │              │     │   mock-api   │          │                     │
-│   │              │     │  1C остатки  │          │                     │
-│   └──────┬───────┘     └──────────────┘          │                     │
-│          │                                        │                     │
+│   │              │──► 1С остатки (:6003)         │                     │
+│   │              │──► mock-api (фоллбэк)         │                     │
+│   └──────┬───────┘                                │                     │
+│          │ :8103                                  │                     │
 └──────────┼────────────────────────────────────────┼────────────────────┘
-           │ :8103                                  │
         браузер                            wav-ответ
 ```
 
@@ -43,10 +42,13 @@
                        LM Studio :1234
                             │ ◄── {"action":"get_stock","item":"молоко"}
                             │
-                            │ 3) GET /api/stock?item=молоко
+                            │ 3) get_stock(item):  STOCK_BACKEND=1c →
+                            │    POST :6003/api/execute_query (ТоварыНаСкладах.Остатки,
+                            │    группировка по Склад, ресурс ВНаличииОстаток);
+                            │    при ошибке → mock-api GET /api/stock
                             ▼
-                       mock-api (1C)
-                            │ ◄── {"found":true,"quantity":42,"message":"..."}
+                       mock-api (1C фоллбэк) / 1C MCP :6003
+                            │ ◄── {"found":true,"quantity":42,"warehouses":[…],"message":"…","source":"1c"}
                             │
                             │ 4) build_answer(text)
                             │ 5) POST /tts {"text": answer}
@@ -65,6 +67,9 @@
 | tts    | 8000 | 8101 | `/health`, `/tts` |
 | mock-api | 8000 | 8102 | `/health`, `/api/stock` |
 | voice-gateway | 8000 | 8103 | `/` (чат), `/ask`, `/ask-text`, `/transcribe`, `/speak`, `/health` |
+
+На хосте (вне compose): LM Studio `:1234`, 1C MCP Toolkit `:6003` — оба через
+`host.docker.internal`.
 
 ## LLM-контракт (шлюз ↔ LM Studio)
 
