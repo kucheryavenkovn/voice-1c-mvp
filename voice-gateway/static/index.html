@@ -24,6 +24,14 @@
   .me { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
   .bot { align-self:flex-start; background:var(--panel); border:1px solid #232733; border-bottom-left-radius:4px; }
   .bot.error { border-color:var(--err); color:var(--err); }
+  .toolbar { background:var(--panel); border-top:1px solid #232733; padding:8px 20px;
+             display:flex; gap:16px; align-items:center; font-size:12px; color:var(--muted);
+             flex-wrap:wrap; }
+  .toolbar label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .toolbar select { background:#0f1115; color:var(--txt); border:1px solid #2a2f3c;
+                    border-radius:6px; padding:3px 6px; font-size:12px; }
+  #vu { flex:1; min-width:120px; height:6px; background:#0f1115; border-radius:4px; overflow:hidden; border:1px solid #2a2f3c; }
+  #vubar { height:100%; width:0%; background:linear-gradient(90deg,var(--ok),var(--accent2)); transition:width .06s linear; }
   footer { background:var(--panel); border-top:1px solid #232733; padding:14px 20px;
            display:flex; gap:10px; align-items:center; }
   #mic { width:56px; height:56px; border-radius:50%; border:none; cursor:pointer;
@@ -31,6 +39,7 @@
          display:flex; align-items:center; justify-content:center; transition:.15s; }
   #mic:hover { filter:brightness(1.1); }
   #mic.rec { background:var(--accent2); animation:pulse 1.2s infinite; }
+  #mic.dialog { background:var(--ok); }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(224,108,58,.5)} 70%{box-shadow:0 0 0 16px rgba(224,108,58,0)} 100%{box-shadow:0 0 0 0 rgba(224,108,58,0)} }
   #txt { flex:1; background:#0f1115; border:1px solid #2a2f3c; color:var(--txt);
          border-radius:12px; padding:12px 14px; font-size:15px; outline:none; }
@@ -38,7 +47,7 @@
   #send { background:var(--accent); color:#fff; border:none; border-radius:12px;
           padding:12px 18px; font-size:15px; cursor:pointer; }
   #send:hover { filter:brightness(1.1); }
-  .hint { font-size:12px; color:var(--muted); text-align:center; padding:0 20px 10px; }
+  .hint { font-size:12px; color:var(--muted); text-align:center; padding:6px 20px 10px; }
   audio { display:none; }
 </style>
 </head>
@@ -51,7 +60,18 @@
 
   <div id="chat"></div>
 
-  <div class="hint">Нажми кружок и говори (например: «какой остаток по молоку?»), ещё раз — чтобы получить ответ. Можно писать текстом.</div>
+  <div class="toolbar">
+    <label><input type="checkbox" id="autoMode"> Авто-диалог (VAD)</label>
+    <label>чувствительность
+      <select id="sens">
+        <option value="низкая">низкая</option>
+        <option value="средняя" selected>средняя</option>
+        <option value="высокая">высокая</option>
+      </select>
+    </label>
+    <div id="vu"><div id="vubar"></div></div>
+  </div>
+  <div class="hint" id="hint">Нажми кружок и говори, ещё раз — для ответа. Включи «Авто-диалог» — и система сама поймёт конец фразы и продолжит диалог.</div>
 
   <footer>
     <button id="mic" title="Говорить">🎙</button>
@@ -67,89 +87,235 @@ const sendBtn = document.getElementById('send');
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const player = document.getElementById('player');
+const autoModeEl = document.getElementById('autoMode');
+const sensEl = document.getElementById('sens');
+const vubar = document.getElementById('vubar');
+const hintEl = document.getElementById('hint');
 
-let mediaRecorder = null;
-let chunks = [];
-let recording = false;
-let streamRef = null;
+// ---- state ----
+// push mode: recording bool. dialog mode: dialogState ∈ idle|arming|listening|talking|processing|answering
+let recording = false;            // push-to-talk
+let dialogActive = false;         // dialog session running
+let dstate = 'idle';              // dialog sub-state
+let mediaRecorder = null, chunks = [], streamRef = null;
+// audio analysis
+let audioCtx = null, analyser = null, sourceNode = null, rmsBuf = null;
+let tickTimer = null;
+let noiseFloor = 0.012;
+let thresh = 0.04;
+let aboveSince = 0, speechStart = 0, lastVoice = 0, calibStart = 0, calibSum = 0, calibN = 0;
 
-function setStatus(s, color) {
-  statusEl.textContent = s;
-  statusEl.style.color = color || '';
-}
+const SENS = {
+  'низкая':  { margin: 0.050, silenceMs: 1100, startMs: 300 },
+  'средняя': { margin: 0.032, silenceMs: 850,  startMs: 220 },
+  'высокая': { margin: 0.020, silenceMs: 650,  startMs: 160 },
+};
+const MIN_SPEECH_MS = 350;
+const MAX_PHRASE_MS = 15000;
+
+function sensParams() { return SENS[sensEl.value] || SENS['средняя']; }
+
+function setStatus(s, color) { statusEl.textContent = s; statusEl.style.color = color || ''; }
 function dec(s){ try { return decodeURIComponent(s || ''); } catch { return s || ''; } }
-
 function addMsg(who, text, meta) {
   const el = document.createElement('div');
   el.className = 'msg ' + (who === 'me' ? 'me' : 'bot');
   el.innerHTML = escapeHtml(text) + (meta ? `<span class="meta">${escapeHtml(meta)}</span>` : '');
-  chat.appendChild(el);
-  chat.scrollTop = chat.scrollHeight;
-  return el;
+  chat.appendChild(el); chat.scrollTop = chat.scrollHeight; return el;
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 async function ensureMic() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
     throw new Error('Микрофон недоступен (нужен HTTPS или localhost)');
-  }
-  return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true } });
+  return await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+  });
 }
 
-mic.addEventListener('click', async () => {
+function pickMime() {
+  return MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+       : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+       : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '';
+}
+function extFor(mime) {
+  const t = (mime || 'audio/webm').split(';')[0];
+  return t.includes('webm') ? 'webm' : (t.includes('ogg') ? 'ogg' : 'wav');
+}
+function makeRecorder(stream) {
+  const mime = pickMime();
+  const r = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  return r;
+}
+
+// ---------- audio analysis (VAD) ----------
+function setupAnalyser(stream) {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sourceNode = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  sourceNode.connect(analyser);   // NOT to destination → no echo
+  rmsBuf = new Float32Array(analyser.fftSize);
+}
+function computeRMS() {
+  analyser.getFloatTimeDomainData(rmsBuf);
+  let s = 0; for (let i=0;i<rmsBuf.length;i++){ const v=rmsBuf[i]; s+=v*v; }
+  return Math.sqrt(s/rmsBuf.length);
+}
+
+// ---------- dialog mode ----------
+async function startDialog() {
+  try {
+    const stream = await ensureMic();
+    streamRef = stream;
+    setupAnalyser(stream);
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    dialogActive = true;
+    mic.classList.add('dialog');
+    calibrateAndListen();
+    tickTimer = setInterval(tick, 50);
+    hintEl.textContent = 'Диалог: говори свободно. Подожди секунду — система поймёт, что фраза окончена. Кружок — остановить.';
+  } catch (e) {
+    addMsg('bot', 'Ошибка микрофона: ' + e.message, '').classList.add('error');
+    setStatus('ошибка', 'var(--err)');
+    stopDialog();
+  }
+}
+
+function calibrateAndListen() {
+  dstate = 'listening';
+  aboveSince = 0; speechStart = 0;
+  calibStart = performance.now(); calibSum = 0; calibN = 0;
+  noiseFloor = 0.012;
+  const p = sensParams();
+  thresh = Math.max(noiseFloor + p.margin, 0.02);
+  setStatus('слушаю…', 'var(--ok)');
+  mic.textContent = '⛔'; mic.title = 'Остановить диалог';
+}
+
+function tick() {
+  if (!dialogActive) return;
+  const r = computeRMS();
+  vubar.style.width = Math.min(100, (r / (thresh * 2.2)) * 100) + '%';
+  const now = performance.now();
+  const p = sensParams();
+
+  // ambient noise calibration (first 700ms of listening)
+  if (dstate === 'listening' && now - calibStart < 700) {
+    calibSum += r; calibN++;
+    noiseFloor = calibSum / calibN;
+    thresh = Math.max(noiseFloor + p.margin, 0.02);
+    return;
+  }
+
+  if (dstate === 'listening') {
+    if (r > thresh) {
+      if (!aboveSince) aboveSince = now;
+      if (now - aboveSince >= p.startMs) {
+        // confirmed speech start → record
+        try {
+          chunks = [];
+          mediaRecorder = makeRecorder(streamRef);
+          mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+          mediaRecorder.onstop = onPhraseEnd;
+          mediaRecorder.start();
+          dstate = 'talking';
+          speechStart = now; lastVoice = now;
+          mic.classList.remove('dialog'); mic.classList.add('rec');
+          setStatus('говорите…', '#e06c3a');
+        } catch (e) { console.warn(e); calibrateAndListen(); }
+      }
+    } else { aboveSince = 0; }
+  } else if (dstate === 'talking') {
+    if (r > thresh) lastVoice = now;
+    if (now - lastVoice >= p.silenceMs || now - speechStart >= MAX_PHRASE_MS) {
+      // endpoint
+      dstate = 'processing';
+      setStatus('думаю…', 'var(--accent)');
+      try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop(); } catch {}
+    }
+  }
+}
+
+function onPhraseEnd() {
+  mic.classList.remove('rec');
+  const dur = performance.now() - speechStart;
+  const mime = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
+  const blob = new Blob(chunks, { type: mime.split(';')[0] });
+  chunks = [];
+  if (dur < MIN_SPEECH_MS) {
+    // too short → noise, skip and keep listening
+    if (dialogActive) calibrateAndListen();
+    return;
+  }
+  sendAudio(blob, 'audio.' + extFor(mime)).then(() => {
+    // callPipeline played the answer and resumed listening if dialog still active
+  }).catch(()=>{});
+}
+
+function stopDialog() {
+  dialogActive = false;
+  if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop(); } catch {}
+  if (streamRef) streamRef.getTracks().forEach(t => t.stop());
+  streamRef = null;
+  if (sourceNode) try { sourceNode.disconnect(); } catch {}
+  if (audioCtx) try { audioCtx.close(); } catch {}
+  audioCtx = null; analyser = null; sourceNode = null;
+  mic.classList.remove('dialog','rec');
+  mic.textContent = '🎙'; mic.title = 'Говорить';
+  vubar.style.width = '0%';
+  dstate = 'idle';
+  setStatus('готов');
+  hintEl.textContent = 'Нажми кружок и говори, ещё раз — для ответа. Включи «Авто-диалог» — и система сама поймёт конец фразы и продолжит диалог.';
+}
+
+// ---------- push-to-talk mode ----------
+async function pushToggle() {
   if (!recording) {
     try {
       const stream = await ensureMic();
       streamRef = stream;
       chunks = [];
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-                 : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
-                 : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '';
-      mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      mediaRecorder = makeRecorder(stream);
       mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      const mime = mediaRecorder.mimeType || 'audio/webm';
       mediaRecorder.onstop = () => {
-        const type = (mediaRecorder.mimeType || 'audio/webm').split(';')[0];
-        const blob = new Blob(chunks, { type });
-        const ext = type.includes('webm') ? 'webm' : (type.includes('ogg') ? 'ogg' : 'wav');
-        sendAudio(blob, 'audio.' + ext);
-        streamRef.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunks, { type: mime.split(';')[0] });
+        chunks = [];
+        sendAudio(blob, 'audio.' + extFor(mime));
+        if (streamRef) streamRef.getTracks().forEach(t => t.stop());
       };
       mediaRecorder.start();
-      recording = true;
-      mic.classList.add('rec');
-      mic.textContent = '⏹';
-      mic.title = 'Остановить';
+      recording = true; mic.classList.add('rec'); mic.textContent='⏹'; mic.title='Остановить';
       setStatus('запись…', '#e06c3a');
     } catch (e) {
-      addMsg('bot', 'Ошибка микрофона: ' + e.message, '').classList.add('error');
-      setStatus('ошибка', 'var(--err)');
+      addMsg('bot','Ошибка микрофона: ' + e.message,'').classList.add('error');
+      setStatus('ошибка','var(--err)');
     }
   } else {
-    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
-    recording = false;
-    mic.classList.remove('rec');
-    mic.textContent = '🎙';
-    mic.title = 'Говорить';
-    setStatus('обработка…', 'var(--accent)');
+    try { if (mediaRecorder && mediaRecorder.state==='recording') mediaRecorder.stop(); } catch {}
+    recording = false; mic.classList.remove('rec'); mic.textContent='🎙'; mic.title='Говорить';
+    setStatus('обработка…','var(--accent)');
   }
+}
+
+mic.addEventListener('click', () => {
+  if (autoModeEl.checked) { dialogActive ? stopDialog() : startDialog(); }
+  else { pushToggle(); }
 });
 
 async function sendAudio(blob, filename) {
-  const fd = new FormData();
-  fd.append('file', blob, filename);
+  const fd = new FormData(); fd.append('file', blob, filename);
   await callPipeline('/ask', fd);
 }
 async function sendText() {
-  const text = txt.value.trim();
-  if (!text) return;
-  txt.value = '';
-  addMsg('me', text);
-  setStatus('обработка…', 'var(--accent)');
+  const text = txt.value.trim(); if (!text) return;
+  txt.value=''; addMsg('me', text); setStatus('обработка…','var(--accent)');
   await callPipeline('/ask-text', JSON.stringify({ text }), true);
 }
 
 async function callPipeline(url, body, isJson) {
-  const meMsg = url === '/ask' ? null : null; // text already added
   try {
     const opt = { method:'POST', body };
     if (isJson) opt.headers = { 'Content-Type':'application/json' };
@@ -159,31 +325,47 @@ async function callPipeline(url, body, isJson) {
     const answer = dec(r.headers.get('X-Answer'));
     if (!r.ok) {
       const detail = await r.text();
-      addMsg('bot', 'Ошибка ' + r.status + ': ' + detail, '').classList.add('error');
-      setStatus('ошибка', 'var(--err)');
+      addMsg('bot','Ошибка '+r.status+': '+detail,'').classList.add('error');
+      setStatus('ошибка','var(--err)');
+      if (dialogActive) calibrateAndListen();
       return;
     }
-    if (url === '/ask') addMsg('me', q || '(пусто)');
-    let meta = '';
-    try { const j = JSON.parse(intent); if (j && j.action) meta = 'intent: ' + JSON.stringify(j); } catch {}
+    if (url==='/ask') addMsg('me', q || '(пусто)');
+    let meta=''; try { const j=JSON.parse(intent); if (j&&j.action) meta='intent: '+JSON.stringify(j); } catch {}
     addMsg('bot', answer || '(пустой ответ)', meta);
     const ab = await r.arrayBuffer();
-    player.src = URL.createObjectURL(new Blob([ab], { type:'audio/wav' }));
-    player.play().catch(()=>{});
-    setStatus('готов');
+    await playAnswer(ab);
   } catch (e) {
-    addMsg('bot', 'Сеть/сервер: ' + e.message, '').classList.add('error');
-    setStatus('ошибка', 'var(--err)');
+    addMsg('bot','Сеть/сервер: '+e.message,'').classList.add('error');
+    setStatus('ошибка','var(--err)');
+  } finally {
+    // resume dialog if active, otherwise idle
+    if (dialogActive) calibrateAndListen();
+    else if (!recording) setStatus('готов');
   }
 }
 
+async function playAnswer(arrayBuffer) {
+  // pause listening while our own answer plays (so the mic doesn't catch it)
+  const wasDialog = dialogActive;
+  if (wasDialog) { dstate = 'answering'; setStatus('отвечаю…','var(--ok)'); }
+  return new Promise((resolve) => {
+    player.src = URL.createObjectURL(new Blob([arrayBuffer], { type:'audio/wav' }));
+    player.onended = () => resolve();
+    player.onerror = () => resolve();
+    player.play().catch(()=>resolve());
+  });
+}
+
 sendBtn.addEventListener('click', sendText);
-txt.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
+txt.addEventListener('keydown', e => { if (e.key==='Enter') sendText(); });
+autoModeEl.addEventListener('change', () => {
+  if (!autoModeEl.checked && dialogActive) stopDialog();
+});
 
 fetch('/health').then(r=>r.json()).then(h=>{
-  if (!h.stt || !h.tts) setStatus('сервисы не готовы', 'var(--err)');
-  else setStatus('готов');
-}).catch(()=> setStatus('шлюз недоступен', 'var(--err)'));
+  if (!h.stt || !h.tts) setStatus('сервисы не готовы','var(--err)'); else setStatus('готов');
+}).catch(()=> setStatus('шлюз недоступен','var(--err)'));
 </script>
 </body>
 </html>
