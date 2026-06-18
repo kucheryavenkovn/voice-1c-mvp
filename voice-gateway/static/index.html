@@ -32,6 +32,8 @@
                     border-radius:6px; padding:3px 6px; font-size:12px; }
   #vu { flex:1; min-width:120px; height:6px; background:#0f1115; border-radius:4px; overflow:hidden; border:1px solid #2a2f3c; }
   #vubar { height:100%; width:0%; background:linear-gradient(90deg,var(--ok),var(--accent2)); transition:width .06s linear; }
+  .toolbar input[type=range] { width:120px; vertical-align:middle; accent-color:var(--accent); }
+  #readout { font-variant-numeric:tabular-nums; min-width:180px; color:var(--muted); }
   footer { background:var(--panel); border-top:1px solid #232733; padding:14px 20px;
            display:flex; gap:10px; align-items:center; }
   #mic { width:56px; height:56px; border-radius:50%; border:none; cursor:pointer;
@@ -62,16 +64,12 @@
 
   <div class="toolbar">
     <label><input type="checkbox" id="autoMode"> Авто-диалог (VAD)</label>
-    <label>чувствительность
-      <select id="sens">
-        <option value="низкая">низкая</option>
-        <option value="средняя" selected>средняя</option>
-        <option value="высокая">высокая</option>
-      </select>
-    </label>
+    <label>порог: <input type="range" id="thresh" min="0.010" max="0.150" step="0.005" value="0.040"></label>
+    <label>пауза до ответа: <input type="range" id="pause" min="300" max="2000" step="100" value="800"> мс</label>
+    <span id="readout">—</span>
     <div id="vu"><div id="vubar"></div></div>
   </div>
-  <div class="hint" id="hint">Нажми кружок и говори, ещё раз — для ответа. Включи «Авто-диалог» — и система сама поймёт конец фразы и продолжит диалог.</div>
+  <div class="hint" id="hint">Нажми кружок и говори. В «Авто-диалоге» система сама поймёт конец фразы. Если не останавливается из-за шума — подними «порог» так, чтобы шум был ниже значения «старт» (видно по цифрам).</div>
 
   <footer>
     <button id="mic" title="Говорить">🎙</button>
@@ -88,7 +86,9 @@ const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const player = document.getElementById('player');
 const autoModeEl = document.getElementById('autoMode');
-const sensEl = document.getElementById('sens');
+const threshEl = document.getElementById('thresh');
+const pauseEl = document.getElementById('pause');
+const readout = document.getElementById('readout');
 const vubar = document.getElementById('vubar');
 const hintEl = document.getElementById('hint');
 
@@ -102,7 +102,7 @@ let mediaRecorder = null, chunks = [], streamRef = null;
 let audioCtx = null, analyser = null, sourceNode = null, rmsBuf = null;
 let tickTimer = null;
 let noiseFloor = 0.012;
-let thresh = 0.04;
+let smoothed = 0;
 let aboveSince = 0, speechStart = 0, lastVoice = 0, calibStart = 0, calibSum = 0, calibN = 0;
 
 const SENS = {
@@ -112,8 +112,13 @@ const SENS = {
 };
 const MIN_SPEECH_MS = 350;
 const MAX_PHRASE_MS = 15000;
+const START_MS = 220;
 
-function sensParams() { return SENS[sensEl.value] || SENS['средняя']; }
+function offset() { return parseFloat(threshEl.value); }
+function pauseMs() { return parseInt(pauseEl.value, 10); }
+// two-threshold VAD: speechThresh starts a phrase; silenceThresh (lower) ends it
+function speechThresh() { return Math.max(noiseFloor + offset(), 0.015); }
+function silenceThresh() { return Math.max(noiseFloor + offset() * 0.45, 0.012); }
 
 function setStatus(s, color) { statusEl.textContent = s; statusEl.style.color = color || ''; }
 function dec(s){ try { return decodeURIComponent(s || ''); } catch { return s || ''; } }
@@ -184,11 +189,9 @@ async function startDialog() {
 
 function calibrateAndListen() {
   dstate = 'listening';
-  aboveSince = 0; speechStart = 0;
+  aboveSince = 0; speechStart = 0; smoothed = 0;
   calibStart = performance.now(); calibSum = 0; calibN = 0;
   noiseFloor = 0.012;
-  const p = sensParams();
-  thresh = Math.max(noiseFloor + p.margin, 0.02);
   setStatus('слушаю…', 'var(--ok)');
   mic.textContent = '⛔'; mic.title = 'Остановить диалог';
 }
@@ -196,22 +199,28 @@ function calibrateAndListen() {
 function tick() {
   if (!dialogActive) return;
   const r = computeRMS();
-  vubar.style.width = Math.min(100, (r / (thresh * 2.2)) * 100) + '%';
+  // smoothing: fast attack on rising signal, slower release → stable but responsive
+  smoothed = smoothed * (r > smoothed ? 0.5 : 0.8) + r * (r > smoothed ? 0.5 : 0.2);
   const now = performance.now();
-  const p = sensParams();
+  const sp = speechThresh(), si = silenceThresh();
 
-  // ambient noise calibration (first 700ms of listening)
-  if (dstate === 'listening' && now - calibStart < 700) {
-    calibSum += r; calibN++;
-    noiseFloor = calibSum / calibN;
-    thresh = Math.max(noiseFloor + p.margin, 0.02);
-    return;
+  // ambient calibration (first 800ms), then slow-follow quiet background while silent
+  if (dstate === 'listening') {
+    if (now - calibStart < 800) {
+      calibSum += r; calibN++; noiseFloor = calibSum / calibN;
+    } else if (smoothed < sp) {
+      noiseFloor = noiseFloor * 0.98 + smoothed * 0.02;
+    }
   }
 
+  const scale = Math.max(sp * 2.2, 0.05);
+  vubar.style.width = Math.min(100, (smoothed / scale) * 100) + '%';
+  readout.textContent = `RMS ${smoothed.toFixed(3)} · старт ${sp.toFixed(3)} · стоп ${si.toFixed(3)} · шум ${noiseFloor.toFixed(3)}`;
+
   if (dstate === 'listening') {
-    if (r > thresh) {
+    if (smoothed > sp) {
       if (!aboveSince) aboveSince = now;
-      if (now - aboveSince >= p.startMs) {
+      if (now - aboveSince >= START_MS) {
         // confirmed speech start → record
         try {
           chunks = [];
@@ -227,9 +236,10 @@ function tick() {
       }
     } else { aboveSince = 0; }
   } else if (dstate === 'talking') {
-    if (r > thresh) lastVoice = now;
-    if (now - lastVoice >= p.silenceMs || now - speechStart >= MAX_PHRASE_MS) {
-      // endpoint
+    // only signal above the (low) silence threshold keeps the phrase alive;
+    // background noise below it lets the phrase end
+    if (smoothed > si) lastVoice = now;
+    if (now - lastVoice >= pauseMs() || now - speechStart >= MAX_PHRASE_MS) {
       dstate = 'processing';
       setStatus('думаю…', 'var(--accent)');
       try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop(); } catch {}
