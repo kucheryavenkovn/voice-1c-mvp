@@ -1,4 +1,4 @@
-"""Snapshot tests for spoken answer phrasing (pytest-syrupy).
+"""Snapshot tests for spoken answer phrasing (syrupy).
 
 Locks the exact wording of voice replies so any unintentional change
 (punctuation, plural regression, article/unit formatting) is caught and reviewed.

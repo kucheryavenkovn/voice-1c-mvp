@@ -38,7 +38,7 @@ pytest -m "not ui" --cov --cov-report=term-missing
 Переснять под свою базу: `./scripts/record_1c_fixtures.ps1` (нужен запущенный MCP-сервер на `:6003`).
 
 ## 3. Снапшоты реплик (`tests/__snapshots__/test_snapshots.ambr`)
-Дословная фиксация голосовых формулировок (`pytest-syrupy`). Любое изменение
+Дословная фиксация голосовых формулировок (`syrupy`). Любое изменение
 текста → падение и ревью. Легитимное изменение:
 ```powershell
 pytest tests/test_snapshots.py --snapshot-update
