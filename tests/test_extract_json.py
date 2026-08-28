@@ -87,3 +87,57 @@ def test_build_answer_list_stock_empty():
     stock = {"found": False, "items": []}
     ans = app.build_answer("t", {"action": "list_stock", "item": "xyz"}, stock)
     assert "нет" in ans
+
+
+# --- order_part ---
+
+
+def test_build_answer_order_found_uses_message():
+    ans = app.build_answer(
+        "t",
+        {"action": "order_part", "item": "молоко", "quantity": 5},
+        {"found": True, "message": "ЗАКАЗ ОФОРМЛЕН"},
+    )
+    assert ans == "ЗАКАЗ ОФОРМЛЕН"
+
+
+def test_build_answer_order_not_found():
+    ans = app.build_answer(
+        "t", {"action": "order_part", "item": "x"}, {"found": False, "message": "не найдено"}
+    )
+    assert ans == "не найдено"
+
+
+def test_build_answer_order_no_backend():
+    ans = app.build_answer("t", {"action": "order_part", "item": "x"}, None)
+    assert "не найден" in ans
+
+
+def test_norm_quantity_variants():
+    assert app._norm_quantity(5) == 5
+    assert app._norm_quantity("5") == 5
+    assert app._norm_quantity(5.0) == 5
+    assert app._norm_quantity("пять") == 1
+    assert app._norm_quantity(None) == 1
+    assert app._norm_quantity(-3) == 1
+    assert app._norm_quantity("2") == 2
+
+
+# --- chat (общие вопросы из собственных знаний модели) ---
+
+
+def test_build_answer_chat_uses_llm_answer():
+    ans = app.build_answer("t", {"action": "chat", "answer": "Лев Толстой."}, None)
+    assert ans == "Лев Толстой."
+
+
+def test_build_answer_chat_without_answer_falls_back_to_help():
+    ans = app.build_answer("t", {"action": "chat", "answer": "  "}, None)
+    assert "остатк" in ans  # help text
+
+
+def test_build_answer_chat_offtopic_no_hallucinated_stock():
+    """chat не должен отвечать на остатки по памяти — но это забота промпта;
+    здесь фиксируем, что без answer остаётся помощь, а не выдумка."""
+    ans = app.build_answer("t", {"action": "chat"}, None)
+    assert "Я умею" in ans

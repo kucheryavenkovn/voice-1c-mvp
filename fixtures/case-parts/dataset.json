@@ -1,0 +1,220 @@
+{
+  "$comment": "Исходный датасет кейса «запчасть для техники». Перенос справочных данных из d:\\git\\duplexV2T\\mock-mcp\\data.json в живую 1С:ERP (ветка feat/order-parts). Количества: сценарные — как в data.json, добор — детерминированный random (seed 20260715).",
+  "source": "duplexV2T/mock-mcp/data.json",
+  "warehouses": {
+    "engineer": "Склад инженера",
+    "current_op": "Склад текущего ОП",
+    "other_op": "Склад другого ОП",
+    "_mapping_from_case": {
+      "Склад инженера Иванова": "Склад инженера",
+      "Региональный склад запчастей": "Склад текущего ОП",
+      "Центральный склад запчастей": "Склад другого ОП"
+    }
+  },
+  "nomenclature_kind": "Запчасти для спецтехники",
+  "unit": "шт",
+  "vehicles": [
+    "Трактор Кировец К-744Р Гос. № А123ВС04",
+    "Трактор МТЗ-82 Гос. № В777ОР04"
+  ],
+  "purchase": {
+    "document": "Документ.ПриобретениеТоваровУслуг",
+    "date": "2026-07-15T10:00:00",
+    "date_1c": "20260715100000",
+    "posted": true,
+    "per_warehouse_lines": {
+      "Склад инженера": 10,
+      "Склад текущего ОП": 11,
+      "Склад другого ОП": 10
+    }
+  },
+  "parts": [
+    {
+      "name": "Диск колесный задний",
+      "article": "DK-300",
+      "qty": {
+        "engineer": 1,
+        "current_op": 4,
+        "other_op": 0
+      },
+      "scenario": true,
+      "branch": "ветка 1: есть на складе инженера -> только ЗаказНаРемонт"
+    },
+    {
+      "name": "Диск колесный",
+      "article": "12345",
+      "qty": {
+        "engineer": 0,
+        "current_op": 3,
+        "other_op": 0
+      },
+      "scenario": true,
+      "branch": "ветка 2: есть на складе текущего ОП -> ЗаказНаРемонт + ПеремещениеТоваров"
+    },
+    {
+      "name": "Диск колесный передний",
+      "article": "DK-100",
+      "qty": {
+        "engineer": 0,
+        "current_op": 0,
+        "other_op": 5
+      },
+      "scenario": true,
+      "branch": "ветка 3: только на другом ОП -> ЗаказНаРемонт + ЗаказНаПеремещение + Перемещение по заказу"
+    },
+    {
+      "name": "Диск колесный усиленный К-744",
+      "article": "DK-744-02",
+      "qty": {
+        "engineer": 0,
+        "current_op": 0,
+        "other_op": 2
+      },
+      "scenario": true,
+      "branch": "ветка 3: только на другом ОП"
+    },
+    {
+      "name": "Фильтр масляный",
+      "article": "77777",
+      "qty": {
+        "engineer": 0,
+        "current_op": 0,
+        "other_op": 0
+      },
+      "scenario": true,
+      "branch": "ветка 4: нигде -> ЗаказПоставщику (как в data.json: «Необходимо оформить заказ поставщику»)"
+    },
+    {
+      "name": "Фильтр топливный",
+      "article": "FT-900",
+      "qty": {
+        "engineer": 4,
+        "current_op": 6,
+        "other_op": 4
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Фильтр воздушный",
+      "article": "FV-220",
+      "qty": {
+        "engineer": 12,
+        "current_op": 6,
+        "other_op": 5
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Ремень приводной",
+      "article": "RB-150",
+      "qty": {
+        "engineer": 6,
+        "current_op": 16,
+        "other_op": 0
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Подшипник ступицы",
+      "article": "HB-6205",
+      "qty": {
+        "engineer": 0,
+        "current_op": 15,
+        "other_op": 8
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Аккумуляторная батарея 12В",
+      "article": "AB-12-190",
+      "qty": {
+        "engineer": 6,
+        "current_op": 0,
+        "other_op": 10
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Свеча накаливания",
+      "article": "SG-001",
+      "qty": {
+        "engineer": 3,
+        "current_op": 13,
+        "other_op": 0
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Насос водяной",
+      "article": "WP-300",
+      "qty": {
+        "engineer": 0,
+        "current_op": 5,
+        "other_op": 8
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Тормозная колодка",
+      "article": "BP-700",
+      "qty": {
+        "engineer": 13,
+        "current_op": 11,
+        "other_op": 16
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Шланг гидравлический",
+      "article": "HG-500",
+      "qty": {
+        "engineer": 5,
+        "current_op": 16,
+        "other_op": 6
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Форсунка топливная",
+      "article": "IN-050",
+      "qty": {
+        "engineer": 12,
+        "current_op": 0,
+        "other_op": 0
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Стартер",
+      "article": "ST-120",
+      "qty": {
+        "engineer": 0,
+        "current_op": 0,
+        "other_op": 13
+      },
+      "scenario": false,
+      "branch": ""
+    },
+    {
+      "name": "Масло моторное 10W-40 (канистра 10 л)",
+      "article": "MO-10W40",
+      "qty": {
+        "engineer": 12,
+        "current_op": 14,
+        "other_op": 0
+      },
+      "scenario": false,
+      "branch": ""
+    }
+  ]
+}

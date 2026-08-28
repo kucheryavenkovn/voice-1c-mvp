@@ -123,6 +123,15 @@ LIST_CASES = {
 }
 
 
+# order_part ("закажи") — _build_order_message
+ORDER_CASES = {
+    "order_with_article": ("Уплотнитель", "0167899", 3, "ТД00-000012"),
+    "order_no_article_qty1": ("Подушка", "", 1, "ТД00-000013"),
+    "order_qty5": ("Молоко 3.2%", "Арт-1", 5, "МС00-000009"),
+    "order_qty21": ("Диск колесный", "12345", 21, "ЗР-0001234"),
+}
+
+
 def test_voice_message_snapshots(snapshot):
     for key, (items, user_item) in CASES.items():
         msg = onec._build_message(items, user_item)
@@ -132,4 +141,10 @@ def test_voice_message_snapshots(snapshot):
 def test_list_message_snapshots(snapshot):
     for key, (items, user_item) in LIST_CASES.items():
         msg = onec._build_list_message(items, user_item)
+        assert msg == snapshot(name=key), f"wording drift for {key}"
+
+
+def test_order_message_snapshots(snapshot):
+    for key, (name, article, qty, number) in ORDER_CASES.items():
+        msg = onec._build_order_message(name, article, qty, number)
         assert msg == snapshot(name=key), f"wording drift for {key}"

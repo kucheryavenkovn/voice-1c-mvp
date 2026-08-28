@@ -113,8 +113,14 @@ class FakeRequests:
             if getattr(st, "onec_fail", False):
                 return FakeResp(200, {"success": False, "error": "fake 1c error"})
             return FakeResp(200, {"success": True, "data": st.onec_data})
+        if method == "POST" and "/execute_code" in u:
+            if getattr(st, "onec_code_fail", False):
+                return FakeResp(200, {"success": False, "error": "fake execute_code error"})
+            return FakeResp(200, {"success": True, "data": st.onec_code})
         if method == "GET" and "/api/stock" in u:
             return FakeResp(200, st.mock_stock)
+        if method == "POST" and "/api/orders" in u:
+            return FakeResp(200, st.mock_order)
         return FakeResp(404, {"error": f"no fake route {method} {url}"})
 
     def post(self, url, **kw):
@@ -136,6 +142,8 @@ def gw(monkeypatch):
     st.lm_raw = json.dumps({"action": "get_stock", "item": "молоко"})
     st.onec_data = ONEC_SINGLE
     st.onec_fail = False
+    st.onec_code = "OK|ТД00-000012|Уплотнитель|0167899"
+    st.onec_code_fail = False
     st.tts_bytes = wav_bytes()
     st.tts_fail = False
     st.mock_stock = {
@@ -143,6 +151,14 @@ def gw(monkeypatch):
         "found": True,
         "quantity": 42,
         "message": "Остаток mock: 42.",
+    }
+    st.mock_order = {
+        "item": "уплотнитель",
+        "found": True,
+        "quantity": 3,
+        "order_number": "ЗР-0001234",
+        "status": "Потребность зарегистрирована",
+        "message": "Создан заказ № ЗР-0001234: уплотнитель — 3 шт. Потребность зарегистрирована.",
     }
 
     fake = FakeRequests(st)

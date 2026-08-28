@@ -93,3 +93,70 @@ def test_tts_failure_502(gw):
     gw.tts_fail = True
     r = gw.client.post("/ask-text", json={"text": "сколько молока?"})
     assert r.status_code == 502
+
+
+def test_ask_text_order_part(gw):
+    gw.lm_raw = json.dumps({"action": "order_part", "item": "уплотнитель", "quantity": 3})
+    r = gw.client.post("/ask-text", json={"text": "закажи три уплотнителя"})
+    assert r.status_code == 200
+    ans = unquote(r.headers["X-Answer"])
+    assert "ТД00-000012" in ans and "Потребность зарегистрирована" in ans
+    intent = json.loads(unquote(r.headers["X-Intent"]))
+    assert intent["action"] == "order_part"
+
+
+def test_order_part_fallback_to_mock_when_1c_blocked(gw):
+    gw.onec_code_fail = True  # напр., «Записать» в чёрном списке execute_code
+    gw.lm_raw = json.dumps({"action": "order_part", "item": "уплотнитель", "quantity": 3})
+    r = gw.client.post("/ask-text", json={"text": "закажи три уплотнителя"})
+    assert r.status_code == 200
+    ans = unquote(r.headers["X-Answer"])
+    assert "ЗР-0001234" in ans
+
+
+def test_order_part_not_found(gw):
+    gw.onec_code = "NOTFOUND"
+    gw.lm_raw = json.dumps({"action": "order_part", "item": "кварцевый генератор", "quantity": 1})
+    r = gw.client.post("/ask-text", json={"text": "закажи кварцевый генератор"})
+    assert r.status_code == 200
+    assert "не найден" in unquote(r.headers["X-Answer"])
+
+
+def test_chat_general_question(gw):
+    gw.lm_raw = json.dumps({"action": "chat", "answer": "Лев Толстой."})
+    r = gw.client.post("/ask-text", json={"text": "кто написал войну и мир?"})
+    assert r.status_code == 200
+    assert unquote(r.headers["X-Answer"]) == "Лев Толстой."
+    intent = json.loads(unquote(r.headers["X-Intent"]))
+    assert intent["action"] == "chat"
+
+
+def test_chat_without_answer_falls_back_to_help(gw):
+    gw.lm_raw = json.dumps({"action": "chat", "answer": ""})
+    r = gw.client.post("/ask-text", json={"text": "ммм"})
+    assert r.status_code == 200
+    assert "остатк" in unquote(r.headers["X-Answer"])
+
+
+def test_request_part_flow(gw):
+    gw.lm_raw = json.dumps(
+        {"action": "request_part", "item": "диск задний", "vehicle": "кировец", "quantity": 1}
+    )
+    gw.onec_code = "B1|000000008|Трактор Кировец К-744Р|Диск колесный задний|DK-300|1"
+    r = gw.client.post("/ask-text", json={"text": "нужен задний диск для кировца"})
+    assert r.status_code == 200
+    ans = unquote(r.headers["X-Answer"])
+    assert "000000008" in ans and "складе инженера" in ans
+    intent = json.loads(unquote(r.headers["X-Intent"]))
+    assert intent["action"] == "request_part"
+    assert intent["vehicle"] == "кировец"
+
+
+def test_request_part_backend_error_still_answers(gw):
+    gw.onec_code_fail = True
+    gw.lm_raw = json.dumps(
+        {"action": "request_part", "item": "диск", "vehicle": "кировец", "quantity": 1}
+    )
+    r = gw.client.post("/ask-text", json={"text": "нужен диск для кировца"})
+    assert r.status_code == 200
+    assert "Не удалось" in unquote(r.headers["X-Answer"])

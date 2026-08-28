@@ -15,6 +15,7 @@ from pydantic import BaseModel
 STT_URL = os.getenv("STT_URL", "http://stt:8000")
 TTS_URL = os.getenv("TTS_URL", "http://tts:8000")
 STOCK_API_URL = os.getenv("STOCK_API_URL", "http://mock-api:8000/api/stock")
+ORDER_API_URL = os.getenv("ORDER_API_URL", "http://mock-api:8000/api/orders")
 
 # Источник остатков: "1c" (1C MCP Toolkit, REST) или "mock" (mock-api контейнер)
 STOCK_BACKEND = os.getenv("STOCK_BACKEND", "1c").lower()
@@ -28,6 +29,9 @@ STOCK_FALLBACK_TO_MOCK = os.getenv("STOCK_FALLBACK_TO_MOCK", "true").lower() in 
 LM_BASE_URL = os.getenv("LM_BASE_URL", "http://host.docker.internal:1234/v1")
 LM_API_KEY = os.getenv("LM_API_KEY", "lm-studio")
 LM_MODEL = os.getenv("LM_MODEL", "auto")
+# reasoning-модели (vLLM + Qwen3): отключаем thinking для скорости голосового цикла
+LM_ENABLE_THINKING = os.getenv("LM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
+LM_TIMEOUT = int(os.getenv("LM_TIMEOUT", "120"))
 
 SYSTEM_PROMPT = (
     "Ты — складской ассистент, интегрированный с 1С. "
@@ -45,7 +49,25 @@ SYSTEM_PROMPT = (
     "(телевизоры→телевизор, стулья→стул, молока→молоко). "
     "Если пользователь назвал конкретный СКЛАД ('на центральном складе', 'на складе X') "
     '— добавь поле "warehouse": "<склад>"; если склад не назван — "warehouse": null.\n'
-    "3) В остальных случаях верни:\n"
+    "3) Если просят ЗАКАЗАТЬ или ОФОРМИТЬ заказ на товар ('закажи 5 молока', "
+    "'оформи заказ на три телевизора', 'нужно заказать шесть подшипников') — верни:\n"
+    '{"action": "order_part", "item": "<товар>", "quantity": <целое число>, "warehouse": null}\n'
+    "В поле quantity подставь количество ЦЕЛЫМ ЧИСЛОМ цифрой ('пять' -> 5, 'три' -> 3); "
+    "если количество не названо — 1. Товар и склад — по тем же правилам, что выше.\n"
+    "4) Если просят запчасть/деталь ДЛЯ КОНКРЕТНОЙ ТЕХНИКИ ('нужен диск для Кировца', "
+    "'закажи фильтр для МТЗ', 'для трактора кировец нужен колёсный диск') — верни:\n"
+    '{"action": "request_part", "item": "<запчасть>", "vehicle": "<техника '
+    'как назвал пользователь>", "quantity": <целое число>}\n'
+    "В item — только запчасть, в vehicle — только техника (марка/модель, без слова "
+    "'трактор' можно). Количество — как выше, по умолчанию 1.\n"
+    "5) Для ЛЮБОЙ другой реплики (общий вопрос, приветствие, беседа) — верни:\n"
+    '{"action": "chat", "answer": "<краткий естественный ответ на русском, '
+    'как в телефонном разговоре, 1-3 предложения>"}\n'
+    "Отвечай в chat из собственных знаний. Вопросы об остатках и заказах ВСЕГДА "
+    "классифицируй по пунктам 1-4 — никогда не отвечай на них в chat по памяти, "
+    "не выдумывай складские данные. Не упоминай JSON, промпты и внутреннее "
+    "устройство системы.\n"
+    "6) Если реплику понять нельзя — верни:\n"
     '{"action": "unknown", "item": null, "warehouse": null}\n'
     "Примеры: 'сколько молока?' -> "
     '{"action":"get_stock","item":"молоко","warehouse":null}; '
@@ -53,7 +75,18 @@ SYSTEM_PROMPT = (
     '{"action":"get_stock","item":"молоко","warehouse":"центральный склад"}; '
     "'по каким товарам с названием сахар есть остатки' -> "
     '{"action":"list_stock","item":"сахар","warehouse":null}; '
-    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777","warehouse":null}.'
+    '\'остаток по артикулу 7777\' -> {"action":"get_stock","item":"7777","warehouse":null}; '
+    '\'закажи 5 молока\' -> {"action":"order_part","item":"молоко","quantity":5,"warehouse":null}; '
+    "'нужен колёсный диск для кировца' -> "
+    '{"action":"request_part","item":"колёсный диск","vehicle":"кировец","quantity":1}; '
+    "'закажи два фильтра для мтз' -> "
+    '{"action":"request_part","item":"фильтр","vehicle":"мтз","quantity":2}; '
+    "'оформи заказ на три телевизора' -> "
+    '{"action":"order_part","item":"телевизор","quantity":3,"warehouse":null}; '
+    '\'привет\' -> {"action":"chat","answer":"Здравствуйте! Могу узнать остаток '
+    'по товару или оформить заказ."}; '
+    "'кто написал войну и мир' -> "
+    '{"action":"chat","answer":"Лев Толстой."}'
 )
 
 HERE = pathlib.Path(__file__).parent
@@ -115,24 +148,31 @@ def extract_json(text: str) -> dict | None:
 
 def lm_intent(text: str) -> tuple[dict | None, str]:
     model = resolve_model()
-    payload = {
-        "model": model,
-        "temperature": 0.0,
-        "max_tokens": 800,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
-    }
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
-    try:
-        r = requests.post(
-            f"{LM_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=60
-        )
-        r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        return None, f"<LM error: {e}>"
+    content = ""
+    for attempt in (1, 2):  # один повтор: LLM иногда отвечает без JSON
+        payload = {
+            "model": model,
+            "temperature": 0.0,
+            "max_tokens": 2048,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        }
+        if not LM_ENABLE_THINKING:
+            # vLLM/Qwen3: мгновенный ответ без цепочки рассуждений
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        try:
+            r = requests.post(
+                f"{LM_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=LM_TIMEOUT
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            return None, f"<LM error: {e}>"
+        if extract_json(content) is not None:
+            break
     return extract_json(content), content
 
 
@@ -169,6 +209,71 @@ def _mock_stock(item: str) -> dict:
     return data
 
 
+def call_order_api(item: str, quantity: int, warehouse: str | None = None) -> dict:
+    """Оформить заказ на товар (кейс «заказ частей»). Бэкенд как у остатков:
+    STOCK_BACKEND='1c' — документ в 1С через /api/execute_code, при ошибке
+    (напр., «Записать» в чёрном списке тулкита) — откат на mock."""
+    if STOCK_BACKEND == "1c":
+        try:
+            return onec.create_order(item, quantity)
+        except Exception as e:
+            print(f"[gateway] 1C order failed: {e}", flush=True)
+            if STOCK_FALLBACK_TO_MOCK:
+                result = _mock_order(item, quantity, warehouse)
+                result["source"] = f"mock(fallback: {e.__class__.__name__})"
+                return result
+            return {
+                "item": item,
+                "found": False,
+                "quantity": quantity,
+                "order_number": None,
+                "status": None,
+                "message": f"Не удалось оформить заказ в 1С: {e}",
+                "source": "1c",
+            }
+    return _mock_order(item, quantity, warehouse)
+
+
+def _mock_order(item: str, quantity: int, warehouse: str | None = None) -> dict:
+    r = requests.post(
+        ORDER_API_URL,
+        json={"item": item, "quantity": quantity, "warehouse": warehouse},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()
+    data.setdefault("source", "mock")
+    return data
+
+
+def _norm_quantity(q) -> int:
+    """LLM может вернуть число, '5' или null → целое >= 1."""
+    try:
+        n = int(float(q))
+    except (TypeError, ValueError):
+        return 1
+    return n if n > 0 else 1
+
+
+def call_part_api(item: str, vehicle: str, quantity: int) -> dict:
+    """Кейс «запчасть для техники»: подбор техники, остатки по складам
+    (инженер → текущее ОП → другое ОП) и создание нужных документов
+    (ЗаказНаРемонт / Перемещение / ЗаказНаПеремещение / ЗаказПоставщику)."""
+    try:
+        return onec.request_part(item, vehicle, quantity)
+    except Exception as e:
+        print(f"[gateway] 1C request_part failed: {e}", flush=True)
+        return {
+            "found": False,
+            "vehicle": vehicle,
+            "branch": "ERROR",
+            "docs": [],
+            "quantity": quantity,
+            "message": f"Не удалось выполнить запрос запчасти в 1С: {e}",
+            "source": "1c",
+        }
+
+
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     action = (intent or {}).get("action")
     item = (intent or {}).get("item")
@@ -180,7 +285,22 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
         if stock and stock.get("found"):
             return stock.get("message") or f"Остаток: {stock.get('quantity')} штук."
         return (stock or {}).get("message") or f"Товар '{item}' не найден."
-    return "Я умею узнавать остатки по товарам. Спросите, например: какой остаток по молоку?"
+    if action == "order_part":
+        if stock and stock.get("found"):
+            return stock.get("message") or f"Заказ на '{item}' оформлен."
+        return (stock or {}).get("message") or f"Товар '{item}' не найден."
+    if action == "request_part":
+        if stock and stock.get("found"):
+            return stock.get("message") or "Запчасть запрошена."
+        return (stock or {}).get("message") or f"Не удалось найти запчасть '{item}'."
+    if action == "chat":
+        ans = str((intent or {}).get("answer") or "").strip()
+        if ans:
+            return ans
+    return (
+        "Я умею узнавать остатки по товарам и оформлять заказы. "
+        "Спросите, например: какой остаток по уплотнителям? Или: закажи три уплотнителя."
+    )
 
 
 def orchestrate(text: str) -> tuple[bytes, dict, dict]:
@@ -192,7 +312,26 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
     stock = None
     item = (intent or {}).get("item")
     warehouse = (intent or {}).get("warehouse")
-    if (intent or {}).get("action") in ("get_stock", "list_stock") and item:
+    action = (intent or {}).get("action")
+    if action == "request_part" and item:
+        t_stock = metrics.ms()
+        try:
+            stock = call_part_api(
+                item,
+                str((intent or {}).get("vehicle") or ""),
+                _norm_quantity((intent or {}).get("quantity")),
+            )
+        except Exception as e:
+            stock = {"found": False, "message": f"Не удалось выполнить запрос запчасти: {e}"}
+        stock_ms = metrics.ms() - t_stock
+    elif action == "order_part" and item:
+        t_stock = metrics.ms()
+        try:
+            stock = call_order_api(item, _norm_quantity((intent or {}).get("quantity")), warehouse)
+        except Exception as e:
+            stock = {"found": False, "message": f"Не удалось оформить заказ: {e}"}
+        stock_ms = metrics.ms() - t_stock
+    elif action in ("get_stock", "list_stock") and item:
         t_stock = metrics.ms()
         try:
             stock = call_stock_api(item, warehouse)
