@@ -38,7 +38,7 @@
 </head>
 <body>
   <h1>📊 Мониторинг пайплайна <span id="live" class="live"></span></h1>
-  <div class="sub">Тайминги по этапам (мс): STT → LM → 1C/stock → TTS. Обновление каждые 2 с. <a href="/" target="_blank">← в чат (новая вкладка)</a></div>
+  <div class="sub">Тайминги по этапам (мс): STT (распознавание речи) → LLM (языковая модель) → 1С (остатки/заказы) → TTS (синтез речи). Обновление каждые 2 с. <a href="/" target="_blank">← в чат (новая вкладка)</a></div>
 
   <div class="top">
     <div class="stat"><div class="k">turns</div><div class="v" id="turns">—</div></div>
@@ -76,7 +76,7 @@
   </div>
 
 <script>
-const STAGES = [["stt","STT"],["lm","LM"],["stock","1C"],["tts","TTS"],["total","total"]];
+const STAGES = [["stt","STT"],["lm","LLM"],["stock","1С"],["tts","TTS"],["total","total"]];
 const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function hm(ms){ if(ms==null) return '—'; if(ms<1000) return ms; return (ms/1000).toFixed(2)+'s'; }
 function rel(ts){ const d=(Date.now()-new Date(ts))/1000; return d<60?Math.round(d)+'с':Math.round(d/60)+'м'; }
