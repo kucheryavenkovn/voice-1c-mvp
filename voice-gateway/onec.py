@@ -628,6 +628,110 @@ def _like_or(pattern_words: str) -> str:
     return _like_pattern(pattern_words)
 
 
+_WORD_NUMBERS = {
+    "один": "1",
+    "два": "2",
+    "три": "3",
+    "четыре": "4",
+    "пять": "5",
+    "шесть": "6",
+    "семь": "7",
+    "восемь": "8",
+    "девять": "9",
+    "десять": "10",
+    "двадцать": "20",
+    "тридцать": "30",
+    "сорок": "40",
+    "пятьдесят": "50",
+    "сто": "100",
+    "двести": "200",
+    "триста": "300",
+    "четыреста": "400",
+    "пятьсот": "500",
+}
+_CYR2LAT = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "e",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "c",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+    }
+)
+
+
+# названия латинских букв по-русски (русский и английский стиль произношения)
+_LETTER_NAMES = (
+    ("бэ", "b"), ("би", "b"), ("вэ", "v"), ("гэ", "g"), ("дэ", "d"), ("ди", "d"),
+    ("кей", "k"), ("ка", "k"), ("эл", "l"), ("эм", "m"), ("эн", "n"), ("пэ", "p"),
+    ("эр", "r"), ("эс", "s"), ("тэ", "t"), ("эф", "f"), ("ха", "h"), ("це", "c"),
+    ("зэд", "z"), ("зэт", "z"),
+)
+
+
+def _letter_name_decode(token: str) -> str:
+    """Разложить токен на слоги-названия латинских букв: 'дэка'→'dk', 'дикей'→'dk'.
+    Пустая строка — если токен целиком не разложился."""
+    t = (token or "").lower().replace("-", "").replace(" ", "")
+    out = ""
+    i = 0
+    while i < len(t):
+        for name, letter in _LETTER_NAMES:
+            if t.startswith(name, i):
+                out += letter
+                i += len(name)
+                break
+        else:
+            return ""
+    return out if len(out) >= 2 else ""
+
+
+def _article_variants(token: str) -> list:
+    """Варианты артикула для фаззи-поиска произнесённого кода (паттерны, не
+    хардкод): любой кириллический токен → латиница ('дк'→'dk'), число словами →
+    цифры ('сто'→'100'), слоги-названия букв ('дэка'/'дикей'→'dk')."""
+    t = (token or "").lower().strip()
+    out = []
+    if t in _WORD_NUMBERS:
+        out.append(_WORD_NUMBERS[t])
+    if any("а" <= ch <= "я" or ch == "ё" for ch in t):
+        lat = t.translate(_CYR2LAT)
+        if lat and lat != t:
+            out.append(lat)
+    decoded = _letter_name_decode(t)
+    if decoded and decoded not in out:
+        out.append(decoded)
+    return out
+
+
 def _token_matchconds(alias: str, text: str, max_tokens: int = 4, bsl_literal: bool = False) -> str:
     """Условия ПОДОБНО для НЕЗАВИСИМОГО совпадения всех токенов (порядок неважен):
     'масляный фильтр' найдёт 'Фильтр масляный'. Каждый токен ищется в Наименовании
@@ -642,13 +746,15 @@ def _token_matchconds(alias: str, text: str, max_tokens: int = 4, bsl_literal: b
     conds = []
     for t in tokens:
         like = f"{q}%{t}%{q}"
+        name_cond = f"ВРЕГ({alias}.Наименование) ПОДОБНО ВРЕГ({like})"
         if alias.startswith("Номенклатура"):
-            conds.append(
-                f"(ВРЕГ({alias}.Наименование) ПОДОБНО ВРЕГ({like}) "
-                f"ИЛИ ВРЕГ({alias}.Артикул) ПОДОБНО ВРЕГ({like}))"
-            )
+            art_conds = [f"ВРЕГ({alias}.Артикул) ПОДОБНО ВРЕГ({like})"]
+            # фаззи-артикул: 'дк сто' ~ DK-100 (кириллица~латиница, числа словами)
+            for v in _article_variants(t):
+                art_conds.append(f"ВРЕГ({alias}.Артикул) ПОДОБНО ВРЕГ({q}%{v}%{q})")
+            conds.append(f"({name_cond} ИЛИ " + " ИЛИ ".join(art_conds) + ")")
         else:
-            conds.append(f"ВРЕГ({alias}.Наименование) ПОДОБНО ВРЕГ({like})")
+            conds.append(name_cond)
     return " И ".join(conds)
 
 

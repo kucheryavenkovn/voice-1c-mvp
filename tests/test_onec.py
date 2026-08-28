@@ -183,6 +183,21 @@ def test_token_matchconds_order_insensitive():
     assert 'ПОДОБНО ВРЕГ(""%масляный%"")' in c2
 
 
+def test_article_variants_fuzzy():
+    """Фаззи-артикулы — паттерны, не хардкод: транслит любого токена,
+    числа словами, слоги-названия букв."""
+    assert "dk" in onec._article_variants("дк")          # транслит
+    assert "100" in onec._article_variants("сто")        # число словами
+    assert "sto" in onec._article_variants("сто")        # + транслит
+    assert "dk" in onec._article_variants("дикей")       # ди+кей (названия букв)
+    assert "dk" in onec._article_variants("дэка")        # дэ+ка
+    assert onec._article_variants("100") == []           # цифры как есть
+    assert "dk" in onec._token_matchconds("Номенклатура", "дк 100")
+    assert "%100%" in onec._token_matchconds("Номенклатура", "дк сто")
+    c2 = onec._token_matchconds("Номенклатура", "масляный фильтр", bsl_literal=True)
+    assert 'ПОДОБНО ВРЕГ(""%масляный%"")' in c2
+
+
 def test_request_part_branch1(gw):
     gw.onec_code = (
         "B1|000000008|Трактор Кировец К-744Р Гос. № А123ВС04|Диск колесный задний|DK-300|1"

@@ -55,41 +55,25 @@ SYSTEM_PROMPT = (
     '{"action": "order_part", "item": "<товар>", "quantity": <целое число>, "warehouse": null}\n'
     "В поле quantity подставь количество ЦЕЛЫМ ЧИСЛОМ цифрой ('пять' -> 5, 'три' -> 3); "
     "если количество не названо — 1. Товар и склад — по тем же правилам, что выше.\n"
-    "4) Диалог «запчасть для техники» — ОБЯЗАТЕЛЬНОЕ ПОДТВЕРЖДЕНИЕ ДАННЫХ ИЗ БАЗЫ. "
-    "Система никогда не принимает слова пользователя на веру: названное надо "
-    "сверить с базой и подтвердить. Порядок работы по слотам (техника, запчасть):\n"
-    "4а) Пользователь назвал ТЕХНИКУ, но в истории ассистент ещё НЕ озвучивал "
-    "точную запись из базы (или пользователь не согласился) — верни:\n"
-    '{"action": "lookup_vehicle", "vehicle": "<техника как назвал пользователь>"}\n'
-    "4б) Техника подтверждена, но ЗАПЧАСТЬ не названа конкретно (нет вида/артикула, "
-    "не выбрана из озвученных ассистентом вариантов) — верни:\n"
-    '{"action": "lookup_parts", "item": "<запчасть как назвал>", "vehicle": "<техника>"}\n'
-    "4в) В истории подтверждены И техника (ассистент озвучил точную запись, "
-    "пользователь согласился), И конкретная запчасть (назван вид/артикул или "
-    "выбрана из озвученных вариантов) — верни:\n"
+    "4) Если просят запчасть ДЛЯ ТЕХНИКИ или запчасть в контексте ремонта "
+    "('нужен диск', 'нужен диск для кировца', 'закажи фильтр для мтз') — верни:\n"
     '{"action": "request_part", "item": "<запчасть>", "vehicle": "<техника '
-    'как назвал пользователь>", "quantity": <целое число>}\n'
-    "В item — только запчасть, в vehicle — только техника (марка/модель/госномер, "
-    "без слова 'трактор' можно). Количество — как выше, по умолчанию 1.\n"
-    "Если слот вообще пуст (нет ни техники, ни запчасти) — верни:\n"
-    '{"action": "clarify", "question": "<один короткий конкретный вопрос>"}\n'
-    "Примеры: нет техники — 'Для какой техники нужна запчасть? Назовите марку, "
-    "модель или госномер.'; техника названа, но не подтверждена — lookup_vehicle "
-    "(НЕ request_part!); техника подтверждена, запчасть общая ('диск', 'фильтр') — "
-    "lookup_parts; пользователь ответил 'да' на 'Нашёл технику: …' — это "
-    "подтверждение техники, дальше ищи запчасть (lookup_parts), НЕ заказывай. "
-    "'да' не является названием запчасти: если ждёшь название запчасти, а в ответ "
-    "'да' — переспроси. Короткие реплики ('да', 'верно', 'задний', номер) трактуй "
-    "по ИСТОРИИ диалога и заполняй слоты из неё. НЕГАТИВНЫЕ ОТВЕТЫ: если "
-    "пользователь сказал 'нет'/'не та' на показанную технику — сбрось "
-    "подтверждение, попроси марку/модель/госномер и снова lookup_vehicle по "
-    "новым данным; если система сообщила 'не найдена / не обрабатываем' — "
-    "пользователь может назвать другую технику или запчасть (снова lookup_*), "
-    "не продолжай старую линию; если пользователь хочет прекратить — не "
-    "настаивай.\n"
+    'как назвали или null>", "quantity": <целое число, по умолчанию 1>}\n'
+    "В item — только запчасть, в vehicle — только техника. Подтверждения и выбор "
+    "вариантов выполняет шлюз — не задавай встречных вопросов о подтверждении "
+    "сам, не выполняй заказ по этой реплике сам.\n"
     "5) Для ЛЮБОЙ другой реплики (общий вопрос, приветствие, беседа) — верни:\n"
     '{"action": "chat", "answer": "<краткий естественный ответ на русском, '
     'как в телефонном разговоре, 1-3 предложения>"}\n'
+    "ПРИВЕТСТВИЕ и начало диалога: представься одним предложением и сразу задай "
+    "ВОПРОС О ДЕЙСТВИИ: 'Что вам сейчас нужно — заказать запчасть или узнать "
+    "остаток?'. Этот вопрос должен оставаться открытым, пока пользователь не "
+    "скажет, что именно ему нужно.\n"
+    "АРТИКУЛЫ: пользователь может произнести артикул по-русски ('дк сто', 'дикей "
+    "сто' = DK-100) — система сама найдёт совпадение. Названный артикул или код — "
+    "это НЕ подтверждённая запчасть: сначала lookup_parts (система покажет "
+    "найденную номенклатуру с артикулом и спросит 'Она?'), и только после "
+    "подтверждения — request_part.\n"
     "Отвечай в chat из собственных знаний. Вопросы об остатках и заказах ВСЕГДА "
     "классифицируй по пунктам 1-4 — никогда не отвечай на них в chat по памяти, "
     "не выдумывай складские данные. Не упоминай JSON, промпты и внутреннее "
@@ -126,6 +110,45 @@ _cached_model = None
 _CHATS: dict[str, deque] = {}
 _CHAT_LIMIT = 12  # последние 6 пар реплик
 
+# --- детерминированная лестница подтверждений (автомат состояний диалога) ---
+_DIALOG_STATES: dict[str, dict] = {}
+_YES_WORDS = {
+    "да",
+    "давай",
+    "ага",
+    "верно",
+    "именно",
+    "он",
+    "она",
+    "он самый",
+    "она самая",
+    "yes",
+    "y",
+    "ок",
+    "хорошо",
+    "подтверждаю",
+}
+_NO_WORDS = {"нет", "не", "не та", "не он", "не она", "неверно", "no", "n"}
+_ABORT_WORDS = {"стоп", "отмена", "отмени", "хватит", "отменить"}
+_FILLERS = {
+    "нужен",
+    "нужна",
+    "нужны",
+    "нужно",
+    "хочу",
+    "давай",
+    "давайте",
+    "закажи",
+    "оформи",
+    "оформить",
+    "мне",
+    "пожалуйста",
+    "плиз",
+    "бы",
+    "ещё",
+    "еще",
+}
+
 
 def chat_history(chat_id: str | None) -> deque | None:
     """История чата (user/assistant пары) или None для анонимных запросов."""
@@ -138,6 +161,79 @@ def chat_append(history: deque | None, user_text: str, answer: str) -> None:
     if history is not None:
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": answer})
+
+
+def _dialog_state(chat_id: str | None) -> dict | None:
+    if not chat_id:
+        return None
+    return _DIALOG_STATES.setdefault(
+        chat_id, {"stage": "idle", "item": None, "vehicle": None, "part": None, "qty": 1}
+    )
+
+
+def _norm_short(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", (text or "").strip().lower()).strip()
+
+
+def _strip_fillers(text: str) -> str:
+    toks = [
+        t
+        for t in re.split(r"\s+", (text or "").strip())
+        if t and t.lower().strip(".,!?") not in _FILLERS
+    ]
+    return " ".join(toks)
+
+
+def _dialog_reset(st: dict) -> None:
+    st.update({"stage": "idle", "item": None, "vehicle": None, "part": None, "qty": 1})
+
+
+def _dialog_turn(st: dict, text: str, t_short: str, qty: int) -> dict:
+    """Один ход детерминированной лестницы. Возвращает dict как от бэкенда."""
+    stage = st["stage"]
+    if stage == "await_vehicle":
+        res = call_lookup_vehicle(_strip_fillers(text))
+        if res.get("found") and len(res.get("vehicles", [])) == 1:
+            st["vehicle"] = res["vehicles"][0]
+            st["stage"] = "await_vehicle_confirm"
+        return res
+    if stage == "await_vehicle_confirm":
+        if t_short in _NO_WORDS:
+            st["stage"] = "await_vehicle"
+            return {
+                "found": False,
+                "message": "Хорошо. Назовите другую технику — марку, модель или госномер.",
+                "source": "1c",
+            }
+        res = call_lookup_parts(st["item"], st["vehicle"])
+        if res.get("found") and len(res.get("parts", [])) == 1:
+            st["part"] = res["parts"][0]
+            st["stage"] = "await_part_confirm"
+        else:
+            st["stage"] = "await_part"
+        return res
+    if stage == "await_part":
+        res = call_lookup_parts(_strip_fillers(text), st["vehicle"])
+        if not res.get("found") and st["item"]:
+            res = call_lookup_parts(f"{st['item']} {_strip_fillers(text)}", st["vehicle"])
+        if res.get("found") and len(res.get("parts", [])) == 1:
+            st["part"] = res["parts"][0]
+            st["stage"] = "await_part_confirm"
+        return res
+    if stage == "await_part_confirm":
+        if t_short in _NO_WORDS:
+            st["stage"] = "await_part"
+            return {
+                "found": False,
+                "message": "Хорошо. Назовите другую запчасть — вид или артикул.",
+                "source": "1c",
+            }
+        p = st["part"] or {}
+        res = call_part_api(p.get("article") or p.get("name") or text, st["vehicle"], qty)
+        if res.get("found"):
+            _dialog_reset(st)
+        return res
+    return {"found": False, "message": "Неизвестный шаг диалога.", "source": "1c"}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -376,16 +472,78 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
             return ans
     return (
         "Я умею узнавать остатки по товарам и оформлять заказы. "
-        "Спросите, например: какой остаток по уплотнителям? Или: закажи три уплотнителя."
+        "Что вам сейчас нужно — заказать запчасть или узнать остаток?"
     )
 
 
 def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dict]:
     """Run LM → stock → TTS and return (audio, headers, trace_extra).
 
-    При заданном chat_id LLM получает историю диалога, а ход (вопрос+ответ)
-    сохраняется в чат — возможны уточнения (clarify)."""
+    При заданном chat_id работает сущность «чат»: история подмешивается в LLM,
+    а лестница подтверждений заказа запчасти ведётся детерминированным
+    автоматом состояний (без LLM на шагах «да»/выбора варианта)."""
     history = chat_history(chat_id)
+    st = _dialog_state(chat_id)
+    t_short = _norm_short(text)
+
+    # 0) отмена диалога
+    if st is not None and st["stage"] != "idle" and t_short in _ABORT_WORDS:
+        _dialog_reset(st)
+        answer = "Хорошо, отменил. Что вам сейчас нужно — заказать запчасть или узнать остаток?"
+        chat_append(history, text, answer)
+        intent = {"action": "dialog_abort"}
+        t_tts = metrics.ms()
+        tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
+        tts_r.raise_for_status()
+        headers = {
+            "X-Question": urllib.parse.quote(text),
+            "X-Intent": urllib.parse.quote(json.dumps(intent, ensure_ascii=False)),
+            "X-Answer": urllib.parse.quote(answer),
+        }
+        return (
+            tts_r.content,
+            headers,
+            {"lm_ms": 0.0, "stock_ms": None, "tts_ms": metrics.ms() - t_tts},
+        )
+
+    # 1) активная лестница: ход обрабатывает автомат состояний (без LLM)
+    if st is not None and st["stage"] in (
+        "await_vehicle",
+        "await_vehicle_confirm",
+        "await_part",
+        "await_part_confirm",
+    ):
+        t_stock = metrics.ms()
+        stock = _dialog_turn(st, text, t_short, st.get("qty") or 1)
+        stock_ms = metrics.ms() - t_stock
+        answer = stock.get("message") or "Уточните."
+        chat_append(history, text, answer)
+        intent = {"action": f"dialog:{st['stage']}"}
+        t_tts = metrics.ms()
+        tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
+        tts_r.raise_for_status()
+        headers = {
+            "X-Question": urllib.parse.quote(text),
+            "X-Intent": urllib.parse.quote(json.dumps(intent, ensure_ascii=False)),
+            "X-Answer": urllib.parse.quote(answer),
+        }
+        return (
+            tts_r.content,
+            headers,
+            {
+                "lm_ms": 0.0,
+                "stock_ms": stock_ms,
+                "tts_ms": metrics.ms() - t_tts,
+                "stock_src": stock.get("source"),
+                "item": st.get("item"),
+                "warehouse": st.get("vehicle"),
+                "found": stock.get("found"),
+                "items": 0,
+                "answer_len": len(answer),
+            },
+        )
+
+    # 2) обычный NLU-путь
     t_lm = metrics.ms()
     intent, raw = lm_intent(text, history)
     lm_ms = metrics.ms() - t_lm
@@ -395,15 +553,26 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     warehouse = (intent or {}).get("warehouse")
     action = (intent or {}).get("action")
     if action == "request_part" and item:
+        # старт лестницы: подтверждаем технику и запчасть из базы, не заказываем сразу
         t_stock = metrics.ms()
-        try:
-            stock = call_part_api(
-                item,
-                str((intent or {}).get("vehicle") or ""),
-                _norm_quantity((intent or {}).get("quantity")),
-            )
-        except Exception as e:
-            stock = {"found": False, "message": f"Не удалось выполнить запрос запчасти: {e}"}
+        st_item = item
+        st_vehicle = str((intent or {}).get("vehicle") or "") or None
+        st_qty = _norm_quantity((intent or {}).get("quantity"))
+        if st is None:
+            # анонимный запрос (без чата) — прежний прямой цикл
+            stock = call_part_api(st_item, st_vehicle or "", st_qty)
+        else:
+            st.update({"stage": "await_vehicle", "item": st_item, "qty": st_qty})
+            if st_vehicle:
+                stock = call_lookup_vehicle(st_vehicle)
+                if stock.get("found") and len(stock.get("vehicles", [])) == 1:
+                    st["vehicle"] = stock["vehicles"][0]
+                    st["stage"] = "await_vehicle_confirm"
+            else:
+                stock = {
+                    "found": False,
+                    "message": "Для какой техники нужна запчасть? Назовите марку, модель или госномер.",
+                }
         stock_ms = metrics.ms() - t_stock
     elif action == "lookup_vehicle":
         t_stock = metrics.ms()
@@ -416,10 +585,16 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     elif action == "order_part" and item:
         t_stock = metrics.ms()
         try:
-            stock = call_order_api(item, _norm_quantity((intent or {}).get("quantity")), warehouse)
+            stock = call_order_api(
+                item,
+                _norm_quantity((intent or {}).get("quantity")),
+                warehouse,
+            )
         except Exception as e:
             stock = {"found": False, "message": f"Не удалось оформить заказ: {e}"}
         stock_ms = metrics.ms() - t_stock
+        if st is not None:
+            _dialog_reset(st)
     elif action in ("get_stock", "list_stock") and item:
         t_stock = metrics.ms()
         try:
@@ -429,6 +604,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         stock_ms = metrics.ms() - t_stock
     else:
         stock_ms = None
+        if st is not None and action in ("get_stock", "list_stock"):
+            _dialog_reset(st)
 
     answer = build_answer(text, intent, stock)
     chat_append(history, text, answer)

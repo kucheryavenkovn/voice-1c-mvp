@@ -228,3 +228,82 @@ def test_lookup_parts_variants(gw):
     r = gw.client.post("/ask-text", json={"text": "диск", "chat_id": "lv3"})
     ans = unquote(r.headers["X-Answer"])
     assert "варианты" in ans and "DK-100" in ans and "Какой нужен?" in ans
+
+
+def test_lookup_parts_single_article_confirms(gw):
+    """Артикул (в т.ч. произнесённый) — сначала подтверждение, не заказ."""
+    gw.lm_raw = json.dumps({"action": "lookup_parts", "item": "дк сто"})
+    gw.onec_data = '[1]{"Наименование","Артикул"}:\n  Диск колесный передний,DK-100'
+    r = gw.client.post("/ask-text", json={"text": "дк сто", "chat_id": "lv4"})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Нашёл запчасть" in ans and "DK-100" in ans and "Она?" in ans
+
+# --- детерминированная лестница подтверждений (chat_id) ---
+
+
+def test_request_part_ladder_full(gw):
+    cid = "ladder1"
+    # 1) запрос без техники -> вопрос про технику
+    gw.lm_raw = json.dumps({"action": "request_part", "item": "диск", "vehicle": None})
+    r = gw.client.post("/ask-text", json={"text": "нужен диск", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Для какой техники" in ans
+
+    # 2) название техники -> нашлась -> подтверждение
+    gw.onec_data = (
+        '[1]{"Наименование"}:\n'
+        "  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345"
+    )
+    r = gw.client.post("/ask-text", json={"text": "кировец", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Нашёл технику" in ans and "Это она?" in ans
+
+    # 3) подтверждение -> варианты запчастей
+    gw.onec_data = (
+        '[2]{"Наименование","Артикул"}:\n'
+        "  Диск колесный передний,DK-100\n"
+        "  Диск колесный задний,DK-300"
+    )
+    r = gw.client.post("/ask-text", json={"text": "да", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "варианты" in ans and "DK-300" in ans
+
+    # 4) выбор варианта -> одиночная запчасть -> подтверждение
+    gw.onec_data = '[1]{"Наименование","Артикул"}:\n  Диск колесный задний,DK-300'
+    r = gw.client.post("/ask-text", json={"text": "задний", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Нашёл запчасть" in ans and "DK-300" in ans and "Она?" in ans
+
+    # 5) финальное подтверждение -> создаётся заказ (execute_code)
+    gw.onec_code = "B1|000000099|Трактор Кировец К-744Р|Диск колесный задний|DK-300|1"
+    r = gw.client.post("/ask-text", json={"text": "да", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "000000099" in ans and "складе инженера" in ans
+    # состояние сброшено
+    assert app._DIALOG_STATES[cid]["stage"] == "idle"
+
+
+def test_request_part_ladder_negative_then_recover(gw):
+    cid = "ladder2"
+    gw.lm_raw = json.dumps({"action": "request_part", "item": "диск", "vehicle": None})
+    gw.client.post("/ask-text", json={"text": "нужен диск", "chat_id": cid})
+    # техника не найдена -> негатив + подсказка, остаёмся на шаге техники
+    gw.onec_data = "[0]:"
+    r = gw.client.post("/ask-text", json={"text": "камаз", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "не найдена" in ans and "не обрабатываем" in ans
+    assert app._DIALOG_STATES[cid]["stage"] == "await_vehicle"
+    # назвали другую -> нашлась
+    gw.onec_data = '[1]{"Наименование"}:\n  Трактор МТЗ-82 Гос. № В777ОР04'
+    r = gw.client.post("/ask-text", json={"text": "мтз восемьдесят два", "chat_id": cid})
+    assert "Нашёл технику" in unquote(r.headers["X-Answer"])
+
+
+def test_request_part_ladder_abort(gw):
+    cid = "ladder3"
+    gw.lm_raw = json.dumps({"action": "request_part", "item": "диск", "vehicle": None})
+    gw.client.post("/ask-text", json={"text": "нужен диск", "chat_id": cid})
+    r = gw.client.post("/ask-text", json={"text": "стоп", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "отменил" in ans
+    assert app._DIALOG_STATES[cid]["stage"] == "idle"
