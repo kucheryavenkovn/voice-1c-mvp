@@ -347,6 +347,27 @@ _ORDER_CONTINUE_WORDS = {
     "ок",
     "хорошо",
 }
+_INTENT_WORDS = {
+    "заказать",
+    "закажи",
+    "заказ",
+    "заказа",
+    "купить",
+    "хочу",
+    "нужно",
+    "нужен",
+    "нужна",
+    "нужны",
+    "запчасть",
+    "запчасти",
+    "деталь",
+    "детали",
+    "номенклатура",
+    "номенклатуру",
+    "позицию",
+    "позиции",
+    "артикул",
+}
 _META_HINTS = (
     "каки",
     "повтори",
@@ -498,6 +519,8 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             st["stage"] = "await_part_confirm"
         else:
             st["stage"] = "await_part"
+            if res.get("found") and res.get("parts"):
+                st["last_variants"] = res["parts"]
         return res
     if stage == "await_part":
         q_up = _extract_qty(text)
@@ -518,18 +541,60 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
                 "source": "1c",
             }
         kind = _classify_utterance(text)
-        if kind in ("meta", "chatter") or st.get("fails", 0) >= 2:
+        # мета-вопрос: повторить варианты, которые уже предлагались
+        if kind == "meta" and st.get("last_variants"):
+            table = build_parts_table(st["last_variants"], st["vehicle"])
+            names = "; ".join(
+                f"{p['name']} (арт. {p.get('article', '')})" for p in st["last_variants"]
+            )
+            return {
+                "found": True,
+                "message": (
+                    f"Для техники {st['vehicle']} есть варианты: {names}. Какой нужен?"
+                ),
+                "table": table,
+                "source": "1c",
+            }
+        if kind == "meta":
+            return {
+                "found": False,
+                "message": (
+                    f"Мы подбираем запчасть для техники {st['vehicle']}. Назовите "
+                    "название или артикул — покажу варианты из базы и остатки."
+                ),
+                "source": "1c",
+            }
+        if kind == "chatter" or st.get("fails", 0) >= 2:
             st["fails"] = 0
             intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
             ans = build_answer(text, intent, None)
             return {"found": False, "message": ans, "source": "llm"}
-        res = call_lookup_parts(_strip_fillers(text), st["vehicle"])
+        # слова-намерения без конкретики ('заказать', 'артикул') — не номенклатура
+        search_text = _strip_fillers(text)
+        core = " ".join(
+            t
+            for t in search_text.split()
+            if t.lower() not in _INTENT_WORDS and t.lower() not in onec._SERVICE_WORDS
+        )
+        if not core:
+            return {
+                "found": False,
+                "message": (
+                    f"Мы уже оформляем заказ для техники {st['vehicle']}. "
+                    "Назовите конкретную запчасть — название или артикул."
+                ),
+                "source": "1c",
+            }
+        res = call_lookup_parts(core, st["vehicle"])
         if not res.get("found") and st["item"]:
-            res = call_lookup_parts(f"{st['item']} {_strip_fillers(text)}", st["vehicle"])
+            res = call_lookup_parts(f"{st['item']} {core}", st["vehicle"])
         res["table"] = _parts_table_with_stock(res.get("parts", []), st["vehicle"])
         if res.get("found") and len(res.get("parts", [])) == 1:
             st["part"] = res["parts"][0]
             st["stage"] = "await_part_confirm"
+            st["fails"] = 0
+        elif res.get("found") and len(res.get("parts", [])) > 1:
+            st["last_variants"] = res["parts"]
             st["fails"] = 0
         else:
             st["fails"] = st.get("fails", 0) + 1
