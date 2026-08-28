@@ -353,9 +353,16 @@ function fmtTimings(sttH, askH) {
   return '⏱ ' + out.join(' · ');
 }
 
+// ---------- chat id (сущность «чат»: история диалога на сервере) ----------
+const chatId = (() => {
+  let id = localStorage.getItem('chat_id');
+  if (!id) { id = 'c-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); localStorage.setItem('chat_id', id); }
+  return id;
+})();
+
 async function answerFromText(text, sttH) {
   try {
-    const r = await fetch('/ask-text', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) });
+    const r = await fetch('/ask-text', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text, chat_id: chatId }) });
     const intent = dec(r.headers.get('X-Intent'));
     const answer = dec(r.headers.get('X-Answer'));
     const askH = r.headers.get('X-Timings') || '';

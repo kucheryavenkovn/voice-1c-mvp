@@ -164,19 +164,23 @@ def test_build_part_request_code_shape():
         '"B4|"',
         "NO_VEHICLE|",
         "NO_PART|",
+        "AMBIG_VEHICLE|",
     ):
         assert marker in code
 
 
 def test_token_matchconds_order_insensitive():
     """'масляный фильтр' должен находить 'Фильтр масляный' — токены И, не порядок.
-    Кавычки удвоены (фрагмент встраивается в BSL-строку Запрос.Текст)."""
+    По умолчанию — чистый текст запроса (одинарные кавычки), для встраивания в
+    BSL-строку — bsl_literal=True (кавычки удваиваются)."""
     c = onec._token_matchconds("Номенклатура", "масляный фильтр")
-    assert 'ПОДОБНО ВРЕГ(""%масляный%"")' in c
-    assert 'ПОДОБНО ВРЕГ(""%фильтр%"")' in c
+    assert 'ПОДОБНО ВРЕГ("%масляный%")' in c
+    assert 'ПОДОБНО ВРЕГ("%фильтр%")' in c
     assert " И " in c
     # цифровой токен тоже ищется и в артикуле
     assert "Артикул" in c
+    c2 = onec._token_matchconds("Номенклатура", "масляный фильтр", bsl_literal=True)
+    assert 'ПОДОБНО ВРЕГ(""%масляный%"")' in c2
 
 
 def test_request_part_branch1(gw):
@@ -221,6 +225,15 @@ def test_request_part_no_vehicle_lists_known(gw):
     assert res["found"] is False
     assert res["branch"] == "NO_VEHICLE"
     assert "Кировец" in res["message"] and "Уточните" in res["message"]
+
+
+def test_request_part_ambiguous_vehicle(gw):
+    gw.onec_code = "AMBIG_VEHICLE|Трактор Кировец К-744Р; Автопогрузчик АМКОДОР"
+    res = onec.request_part("диск", "амкодор", 1)
+    assert res["found"] is False
+    assert res["branch"] == "AMBIG_VEHICLE"
+    assert "несколько единиц техники" in res["message"]
+    assert "АМКОДОР" in res["message"]
 
 
 def test_request_part_no_part(gw):

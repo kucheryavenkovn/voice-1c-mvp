@@ -3,6 +3,7 @@
 import json
 from urllib.parse import unquote
 
+import app
 from conftest import ONEC_MULTI, ONEC_SINGLE
 
 
@@ -160,3 +161,70 @@ def test_request_part_backend_error_still_answers(gw):
     r = gw.client.post("/ask-text", json={"text": "нужен диск для кировца"})
     assert r.status_code == 200
     assert "Не удалось" in unquote(r.headers["X-Answer"])
+
+
+# --- сущность «чат»: история + уточнения ---
+
+
+def test_chat_history_stored(gw):
+    gw.lm_raw = json.dumps({"action": "chat", "answer": "Привет."})
+    gw.client.post("/ask-text", json={"text": "привет", "chat_id": "t1"})
+    h = app._CHATS.get("t1")
+    assert h is not None and len(h) == 2
+    assert h[0]["role"] == "user" and h[0]["content"] == "привет"
+    assert h[1]["role"] == "assistant" and h[1]["content"] == "Привет."
+    # анонимный запрос историю не пишет
+    gw.client.post("/ask-text", json={"text": "пока"})
+    assert len(app._CHATS.get("t1")) == 2
+
+
+def test_chat_history_trimmed_to_limit(gw):
+    gw.lm_raw = json.dumps({"action": "chat", "answer": "ок"})
+    for i in range(10):
+        gw.client.post("/ask-text", json={"text": f"вопрос {i}", "chat_id": "t2"})
+    assert len(app._CHATS["t2"]) == app._CHAT_LIMIT
+
+
+def test_clarify_answer(gw):
+    gw.lm_raw = json.dumps({"action": "clarify", "question": "Для какой техники нужна запчасть?"})
+    r = gw.client.post("/ask-text", json={"text": "нужен диск", "chat_id": "t3"})
+    assert r.status_code == 200
+    ans = unquote(r.headers["X-Answer"])
+    assert ans == "Для какой техники нужна запчасть?"
+    # уточнение тоже попадает в историю (чтобы «да» резолвилось)
+    assert app._CHATS["t3"][1]["content"] == ans
+
+
+# --- шаги подтверждения: lookup_vehicle / lookup_parts ---
+
+
+def test_lookup_vehicle_single_confirms(gw):
+    gw.lm_raw = json.dumps({"action": "lookup_vehicle", "vehicle": "кировец"})
+    gw.onec_data = (
+        '[1]{"Наименование"}:\n  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345'
+    )
+    r = gw.client.post("/ask-text", json={"text": "кировец", "chat_id": "lv1"})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Нашёл технику" in ans and "Это она?" in ans
+    assert "VIN XTA" in ans  # VIN прозвучал
+
+
+def test_lookup_vehicle_not_found_negative(gw):
+    gw.lm_raw = json.dumps({"action": "lookup_vehicle", "vehicle": "камаз"})
+    gw.onec_data = "[0]:"
+    r = gw.client.post("/ask-text", json={"text": "камаз", "chat_id": "lv2"})
+    ans = unquote(r.headers["X-Answer"])
+    assert "не найдена" in ans and "не обрабатываем" in ans
+
+
+def test_lookup_parts_variants(gw):
+    gw.lm_raw = json.dumps({"action": "lookup_parts", "item": "диск", "vehicle": "кировец"})
+    gw.onec_data = (
+        '[3]{"Наименование","Артикул"}:\n'
+        "  Диск колесный передний,DK-100\n"
+        "  Диск колесный задний,DK-300\n"
+        "  Диск колесный усиленный К-744,DK-744-02"
+    )
+    r = gw.client.post("/ask-text", json={"text": "диск", "chat_id": "lv3"})
+    ans = unquote(r.headers["X-Answer"])
+    assert "варианты" in ans and "DK-100" in ans and "Какой нужен?" in ans

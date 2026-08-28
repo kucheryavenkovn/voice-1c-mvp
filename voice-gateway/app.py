@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import urllib.parse
+from collections import deque
 
 import metrics
 import onec
@@ -54,12 +55,38 @@ SYSTEM_PROMPT = (
     '{"action": "order_part", "item": "<товар>", "quantity": <целое число>, "warehouse": null}\n'
     "В поле quantity подставь количество ЦЕЛЫМ ЧИСЛОМ цифрой ('пять' -> 5, 'три' -> 3); "
     "если количество не названо — 1. Товар и склад — по тем же правилам, что выше.\n"
-    "4) Если просят запчасть/деталь ДЛЯ КОНКРЕТНОЙ ТЕХНИКИ ('нужен диск для Кировца', "
-    "'закажи фильтр для МТЗ', 'для трактора кировец нужен колёсный диск') — верни:\n"
+    "4) Диалог «запчасть для техники» — ОБЯЗАТЕЛЬНОЕ ПОДТВЕРЖДЕНИЕ ДАННЫХ ИЗ БАЗЫ. "
+    "Система никогда не принимает слова пользователя на веру: названное надо "
+    "сверить с базой и подтвердить. Порядок работы по слотам (техника, запчасть):\n"
+    "4а) Пользователь назвал ТЕХНИКУ, но в истории ассистент ещё НЕ озвучивал "
+    "точную запись из базы (или пользователь не согласился) — верни:\n"
+    '{"action": "lookup_vehicle", "vehicle": "<техника как назвал пользователь>"}\n'
+    "4б) Техника подтверждена, но ЗАПЧАСТЬ не названа конкретно (нет вида/артикула, "
+    "не выбрана из озвученных ассистентом вариантов) — верни:\n"
+    '{"action": "lookup_parts", "item": "<запчасть как назвал>", "vehicle": "<техника>"}\n'
+    "4в) В истории подтверждены И техника (ассистент озвучил точную запись, "
+    "пользователь согласился), И конкретная запчасть (назван вид/артикул или "
+    "выбрана из озвученных вариантов) — верни:\n"
     '{"action": "request_part", "item": "<запчасть>", "vehicle": "<техника '
     'как назвал пользователь>", "quantity": <целое число>}\n'
-    "В item — только запчасть, в vehicle — только техника (марка/модель, без слова "
-    "'трактор' можно). Количество — как выше, по умолчанию 1.\n"
+    "В item — только запчасть, в vehicle — только техника (марка/модель/госномер, "
+    "без слова 'трактор' можно). Количество — как выше, по умолчанию 1.\n"
+    "Если слот вообще пуст (нет ни техники, ни запчасти) — верни:\n"
+    '{"action": "clarify", "question": "<один короткий конкретный вопрос>"}\n'
+    "Примеры: нет техники — 'Для какой техники нужна запчасть? Назовите марку, "
+    "модель или госномер.'; техника названа, но не подтверждена — lookup_vehicle "
+    "(НЕ request_part!); техника подтверждена, запчасть общая ('диск', 'фильтр') — "
+    "lookup_parts; пользователь ответил 'да' на 'Нашёл технику: …' — это "
+    "подтверждение техники, дальше ищи запчасть (lookup_parts), НЕ заказывай. "
+    "'да' не является названием запчасти: если ждёшь название запчасти, а в ответ "
+    "'да' — переспроси. Короткие реплики ('да', 'верно', 'задний', номер) трактуй "
+    "по ИСТОРИИ диалога и заполняй слоты из неё. НЕГАТИВНЫЕ ОТВЕТЫ: если "
+    "пользователь сказал 'нет'/'не та' на показанную технику — сбрось "
+    "подтверждение, попроси марку/модель/госномер и снова lookup_vehicle по "
+    "новым данным; если система сообщила 'не найдена / не обрабатываем' — "
+    "пользователь может назвать другую технику или запчасть (снова lookup_*), "
+    "не продолжай старую линию; если пользователь хочет прекратить — не "
+    "настаивай.\n"
     "5) Для ЛЮБОЙ другой реплики (общий вопрос, приветствие, беседа) — верни:\n"
     '{"action": "chat", "answer": "<краткий естественный ответ на русском, '
     'как в телефонном разговоре, 1-3 предложения>"}\n'
@@ -94,6 +121,23 @@ app = FastAPI(title="voice-gateway")
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 _cached_model = None
+
+# --- сущность «чат»: история диалога по chat_id (in-memory) ---
+_CHATS: dict[str, deque] = {}
+_CHAT_LIMIT = 12  # последние 6 пар реплик
+
+
+def chat_history(chat_id: str | None) -> deque | None:
+    """История чата (user/assistant пары) или None для анонимных запросов."""
+    if not chat_id:
+        return None
+    return _CHATS.setdefault(chat_id, deque(maxlen=_CHAT_LIMIT))
+
+
+def chat_append(history: deque | None, user_text: str, answer: str) -> None:
+    if history is not None:
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": answer})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -146,19 +190,20 @@ def extract_json(text: str) -> dict | None:
         return None
 
 
-def lm_intent(text: str) -> tuple[dict | None, str]:
+def lm_intent(text: str, history: deque | None = None) -> tuple[dict | None, str]:
     model = resolve_model()
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history:
+        messages += list(history)
+    messages.append({"role": "user", "content": text})
     content = ""
     for _attempt in (1, 2):  # один повтор: LLM иногда отвечает без JSON
         payload = {
             "model": model,
             "temperature": 0.0,
             "max_tokens": 2048,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
+            "messages": messages,
         }
         if not LM_ENABLE_THINKING:
             # vLLM/Qwen3: мгновенный ответ без цепочки рассуждений
@@ -274,6 +319,32 @@ def call_part_api(item: str, vehicle: str, quantity: int) -> dict:
         }
 
 
+def _lookup_error(prefix: str, e: Exception) -> dict:
+    return {
+        "found": False,
+        "message": f"Не удалось найти {prefix} в 1С: {e}",
+        "source": "1c",
+    }
+
+
+def call_lookup_vehicle(vehicle: str) -> dict:
+    """Шаг диалога: найти технику в базе и попросить подтверждение."""
+    try:
+        return onec.find_vehicles(vehicle)
+    except Exception as e:
+        print(f"[gateway] 1C find_vehicles failed: {e}", flush=True)
+        return _lookup_error("технику", e)
+
+
+def call_lookup_parts(item: str, vehicle: str | None) -> dict:
+    """Шаг диалога: предложить варианты запчастей из базы для выбора."""
+    try:
+        return onec.find_parts(item, vehicle)
+    except Exception as e:
+        print(f"[gateway] 1C find_parts failed: {e}", flush=True)
+        return _lookup_error("запчасти", e)
+
+
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     action = (intent or {}).get("action")
     item = (intent or {}).get("item")
@@ -293,6 +364,12 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
         if stock and stock.get("found"):
             return stock.get("message") or "Запчасть запрошена."
         return (stock or {}).get("message") or f"Не удалось найти запчасть '{item}'."
+    if action in ("lookup_vehicle", "lookup_parts"):
+        return (stock or {}).get("message") or "Не удалось найти в базе. Уточните."
+    if action == "clarify":
+        q = str((intent or {}).get("question") or "").strip()
+        if q:
+            return q
     if action == "chat":
         ans = str((intent or {}).get("answer") or "").strip()
         if ans:
@@ -303,10 +380,14 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     )
 
 
-def orchestrate(text: str) -> tuple[bytes, dict, dict]:
-    """Run LM → stock → TTS and return (audio, headers, trace_extra)."""
+def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dict]:
+    """Run LM → stock → TTS and return (audio, headers, trace_extra).
+
+    При заданном chat_id LLM получает историю диалога, а ход (вопрос+ответ)
+    сохраняется в чат — возможны уточнения (clarify)."""
+    history = chat_history(chat_id)
     t_lm = metrics.ms()
-    intent, raw = lm_intent(text)
+    intent, raw = lm_intent(text, history)
     lm_ms = metrics.ms() - t_lm
 
     stock = None
@@ -323,6 +404,14 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
             )
         except Exception as e:
             stock = {"found": False, "message": f"Не удалось выполнить запрос запчасти: {e}"}
+        stock_ms = metrics.ms() - t_stock
+    elif action == "lookup_vehicle":
+        t_stock = metrics.ms()
+        stock = call_lookup_vehicle(str((intent or {}).get("vehicle") or item or ""))
+        stock_ms = metrics.ms() - t_stock
+    elif action == "lookup_parts" and item:
+        t_stock = metrics.ms()
+        stock = call_lookup_parts(item, (intent or {}).get("vehicle"))
         stock_ms = metrics.ms() - t_stock
     elif action == "order_part" and item:
         t_stock = metrics.ms()
@@ -342,6 +431,7 @@ def orchestrate(text: str) -> tuple[bytes, dict, dict]:
         stock_ms = None
 
     answer = build_answer(text, intent, stock)
+    chat_append(history, text, answer)
 
     t_tts = metrics.ms()
     try:
@@ -427,6 +517,7 @@ def transcribe(file: UploadFile = File(...)):
 
 class AskTextRequest(BaseModel):
     text: str
+    chat_id: str | None = None
 
 
 @app.post("/ask-text")
@@ -436,7 +527,7 @@ def ask_text(req: AskTextRequest):
         raise HTTPException(status_code=400, detail="empty text")
     t0 = metrics.ms()
     try:
-        audio, headers, extra = orchestrate(text)
+        audio, headers, extra = orchestrate(text, req.chat_id)
     except HTTPException as e:
         _err(t0, "ask-text", str(e.detail))
         raise
@@ -470,7 +561,7 @@ def ask(file: UploadFile = File(...)):
     if not text:
         raise HTTPException(status_code=400, detail="STT returned empty text")
     try:
-        audio, headers, extra = orchestrate(text)
+        audio, headers, extra = orchestrate(text, file.headers.get("x-chat-id"))
     except HTTPException as e:
         _err(t0, "ask", str(e.detail), stt_ms=stt_ms)
         raise
