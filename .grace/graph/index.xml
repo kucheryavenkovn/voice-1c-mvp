@@ -1,0 +1,22 @@
+<GraceGraphIndex graceVersion="4.0">
+  <Applicability>applicable</Applicability>
+  <GraphDocuments>
+    <GD-MAIN>
+      <Path>graph/main.xml</Path>
+      <Owns>
+        <M-VOICE-GATEWAY />
+        <M-1C-ADAPTER />
+        <M-OBSERVABILITY />
+        <M-STT />
+        <M-TTS />
+        <M-MOCK-1C />
+        <M-WEB-CHAT />
+        <M-WEB-DIAG />
+        <M-WEB-MONITOR />
+        <DF-VOICE-TURN />
+        <DF-PART-ORDER />
+        <DF-OBSERVABILITY />
+      </Owns>
+    </GD-MAIN>
+  </GraphDocuments>
+</GraceGraphIndex>

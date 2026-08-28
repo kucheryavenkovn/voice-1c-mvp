@@ -22,6 +22,22 @@ import re
 
 import requests
 
+# START_MODULE_CONTRACT
+#   PURPOSE: Интеграционный адаптер к 1С через MCP Toolkit.
+#   SCOPE: stock queries, vehicle/part lookup, supply source decision, document creation.
+#   DEPENDS: M-VOICE-GATEWAY (контракт данных), 1C MCP Toolkit REST
+#   LINKS: M-1C-ADAPTER, V-M-1C-ADAPTER, DF-PART-ORDER
+#   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   query_stock/stock_at_warehouse/stock_for_item - чтение остатков
+#   find_vehicles/find_parts - идентификация техники и номенклатуры
+#   request_part/create_order/create_repair_order - создание документов
+#   execute_code/_build_*_code - генерация и выполнение BSL
+# END_MODULE_MAP
+
 ONEC_BASE_URL = os.getenv("ONEC_BASE_URL", "http://host.docker.internal:6003/api")
 ONEC_CHANNEL = os.getenv("ONEC_CHANNEL", "").strip()
 ONEC_TIMEOUT = int(os.getenv("ONEC_TIMEOUT", "30"))
@@ -42,6 +58,7 @@ def _api_url(endpoint: str) -> str:
     return url
 
 
+# START_BLOCK_NORMALIZE_SEARCH
 def _sanitize(item: str) -> str:
     """Оставить буквы/цифры/пробелы/дефис — безопасно для ПОДОБНО.
 
@@ -53,6 +70,7 @@ def _sanitize(item: str) -> str:
     return s[:40]
 
 
+# END_BLOCK_NORMALIZE_SEARCH
 _CYR = re.compile(r"[А-Яа-яЁё]+")
 _morph = None
 
@@ -99,6 +117,7 @@ def _like_pattern(safe: str) -> str:
     return "%" + "%".join(tokens) + "%"
 
 
+# START_BLOCK_BUILD_STOCK_QUERY
 def _build_query(item: str, warehouse: str | None = None) -> str:
     like = _like_pattern(_lemmatize(_sanitize(item)))
     conds = [
@@ -130,6 +149,7 @@ def _build_query(item: str, warehouse: str | None = None) -> str:
     )
 
 
+# END_BLOCK_BUILD_STOCK_QUERY
 def _coerce(s: str):
     if s in ("", "null", "Null", "NULL"):
         return None
@@ -147,6 +167,7 @@ def _coerce(s: str):
         return s
 
 
+# START_BLOCK_PARSE_1C_TABLE
 def _parse_row(line: str) -> list:
     fields = []
     i, n = 0, len(line)
@@ -182,6 +203,7 @@ def _parse_row(line: str) -> list:
     return fields
 
 
+# END_BLOCK_PARSE_1C_TABLE
 _HEADER_RE = re.compile(r"^\[(\d+)\]\s*(\{.*\})?\s*:?\s*$")
 
 
@@ -342,6 +364,14 @@ def _build_at_warehouse_message(items: list, user_item: str, wh_name: str) -> st
     return f"Остаток '{user_item}' на складе '{wh_name}': {total} ({n} {pos})."
 
 
+# START_CONTRACT: query_stock
+#   PURPOSE: Остатки товара из 1С (опц. на складе) в контракте mock-api.
+#   INPUTS: { item: str, warehouse: str|None }
+#   OUTPUTS: { found, quantity, items[], warehouses[], message, source='1c' }
+#   SIDE_EFFECTS: HTTP POST /execute_query.
+#   LINKS: M-1C-ADAPTER, DF-VOICE-TURN
+# END_CONTRACT: query_stock
+# START_BLOCK_QUERY_STOCK
 def query_stock(item: str, warehouse: str | None = None) -> dict:
     """Вернуть остатки товара из 1С (опционально на конкретном складе).
 
@@ -464,6 +494,14 @@ def query_stock(item: str, warehouse: str | None = None) -> dict:
     return result
 
 
+# END_BLOCK_QUERY_STOCK
+# START_CONTRACT: stock_for_item
+#   PURPOSE: Остатки позиции по трём складам кейса для выбора источника.
+#   INPUTS: { item: str }
+#   OUTPUTS: { 'E': int, 'C': int, 'O': int }
+#   LINKS: M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: stock_for_item
+# START_BLOCK_SELECT_SUPPLY_SOURCE
 def stock_for_item(item: str) -> dict:
     """Остатки позиции по трём складам кейса (только чтение) для выбора
     источника обеспечения: {'E': x, 'C': y, 'O': z}.
@@ -503,6 +541,7 @@ def stock_for_item(item: str) -> dict:
     return out
 
 
+# END_BLOCK_SELECT_SUPPLY_SOURCE
 def _object_description(value):
     """objectRef-структура execute_query -> dict для параметров запроса."""
     if isinstance(value, dict) and value.get("_objectRef"):
@@ -518,6 +557,14 @@ _SOURCE_NAMES = {
 }
 
 
+# START_CONTRACT: create_repair_order
+#   PURPOSE: Создать по корзине один ЗаказНаРемонт + документы источников.
+#   INPUTS: { items: list[{source,part,qty}], vehicle_name: str }
+#   OUTPUTS: { docs: {repair,cmove,zorder,zmove,order(+links)}, message }
+#   SIDE_EFFECTS: Создаёт документы в 1С (перепещения ожидают проведения).
+#   LINKS: M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: create_repair_order
+# START_BLOCK_CREATE_REPAIR_ORDER
 def create_repair_order(items: list, vehicle_name: str) -> dict:
     """Создать по корзине: ОДИН ЗаказНаРемонт со всеми позициями + документы
     источников (перемещения, заказы на перемещение, заказ поставщику).
@@ -549,6 +596,7 @@ def create_repair_order(items: list, vehicle_name: str) -> dict:
     return {"docs": docs, "message": _build_cart_message(norm, docs)}
 
 
+# END_BLOCK_CREATE_REPAIR_ORDER
 def _build_cart_message(items: list, docs: dict) -> str:
     n = len(items)
     pos = _plural(n, "позиция", "позиции", "позиций")
@@ -914,6 +962,14 @@ def ping() -> bool:
         return False
 
 
+# START_CONTRACT: execute_code
+#   PURPOSE: Выполнить BSL через MCP Toolkit (/api/execute_code).
+#   INPUTS: { code: str }
+#   OUTPUTS: { str - значение переменной Результат }
+#   SIDE_EFFECTS: Ошибки -> RuntimeError; 'Записать' требует ослабления чёрного списка.
+#   LINKS: M-1C-ADAPTER
+# END_CONTRACT: execute_code
+# START_BLOCK_EXECUTE_1C_CODE
 def execute_code(code: str) -> str:
     """POST /api/execute_code: выполнить код 1С, вернув значение переменной `Результат`.
 
@@ -927,6 +983,7 @@ def execute_code(code: str) -> str:
     return str(body.get("data") or "")
 
 
+# END_BLOCK_EXECUTE_1C_CODE
 def _doc_type_bsl() -> str:
     """Безопасный идентификатор документа для `Документы.<Имя>.СоздатьДокумент()`."""
     t = re.sub(r"[^\w]", "", ONEC_ORDER_DOC_TYPE or "", flags=re.UNICODE)
@@ -1646,6 +1703,13 @@ def _fuzzy_pick(query: str, names: list, threshold: float = 0.6, limit: int = 3)
     return [n for _s, n in scored[:limit]]
 
 
+# START_CONTRACT: find_vehicles
+#   PURPOSE: Идентификация техники по справочнику с фаззи-фоллбэком.
+#   INPUTS: { pattern: str }
+#   OUTPUTS: { found, vehicles[], message, source='1c' }
+#   LINKS: M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: find_vehicles
+# START_BLOCK_RESOLVE_VEHICLE
 def find_vehicles(pattern: str) -> dict:
     """Поиск техники для ПОДТВЕРЖДЕНИЯ (диалог): возвращает кандидатов с
     госномером/VIN и вопрос. Только чтение (execute_query).
@@ -1727,6 +1791,14 @@ def find_vehicles(pattern: str) -> dict:
     }
 
 
+# END_BLOCK_RESOLVE_VEHICLE
+# START_CONTRACT: find_parts
+#   PURPOSE: Поиск номенклатуры вида «Запчасти для спецтехники» (+фаззи).
+#   INPUTS: { item: str, vehicle: str|None }
+#   OUTPUTS: { found, parts[{name,article}], message, source='1c' }
+#   LINKS: M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: find_parts
+# START_BLOCK_RESOLVE_PART
 def find_parts(item: str, vehicle: str | None = None) -> dict:
     """Поиск запчастей для ВЫБОРА (диалог): кандидаты вида «Запчасти для
     спецтехники» по токенам (имя/артикул/код, фаззи-фоллбэк). Только чтение."""
@@ -1803,6 +1875,15 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
     }
 
 
+# END_BLOCK_RESOLVE_PART
+# START_CONTRACT: request_part
+#   PURPOSE: Разовая заявка запчасти: техника+номенклатура+остатки+документы.
+#   INPUTS: { item: str, vehicle: str, quantity: int }
+#   OUTPUTS: { found, branch B1-B4, docs[], message, source='1c' }
+#   SIDE_EFFECTS: Создаёт ЗаказНаРемонт/Перемещение/ЗаказНаПеремещение/ЗаказПоставщику.
+#   LINKS: M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: request_part
+# START_BLOCK_REQUEST_PART_SINGLE
 def request_part(item: str, vehicle: str, quantity: int) -> dict:
     """Кейс «запчасть для техники»: подобрать технику, проверить склады
     (инженер → текущее ОП → другое ОП) и создать нужные документы.
@@ -1884,3 +1965,5 @@ def request_part(item: str, vehicle: str, quantity: int) -> dict:
         "message": _build_part_message(head, rest, vehicle, qty),
         "source": "1c",
     }
+
+# END_BLOCK_REQUEST_PART_SINGLE

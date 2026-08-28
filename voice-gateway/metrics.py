@@ -10,6 +10,24 @@ import time
 from collections import deque
 from datetime import datetime
 
+# START_MODULE_CONTRACT
+#   PURPOSE: In-process observability: stage timings, traces, LM token metrics.
+#   SCOPE: aggregation (avg/p50/p95/max), recent traces, LM tokens/cost/tps.
+#   DEPENDS: none (stdlib only)
+#   LINKS: M-OBSERVABILITY, V-M-OBSERVABILITY, DF-OBSERVABILITY
+#   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   ms - monotonic clock in ms
+#   record - accumulate turn trace
+#   record_lm - accumulate LM token/cost/tps stats
+#   snapshot - aggregate snapshot for /metrics and monitor UI
+#   fmt_timings - compact timings string
+#   log_line - trace log line
+# END_MODULE_MAP
+
 _lock = threading.Lock()
 _STAGES = ("stt", "lm", "stock", "tts", "total")
 _samples = {k: deque(maxlen=200) for k in _STAGES}
@@ -51,6 +69,12 @@ def record(trace: dict) -> None:
         _recent.appendleft(dict(trace))
 
 
+# START_CONTRACT: record_lm
+#   PURPOSE: Накопить LM-статистику вызова (токены, кэш, скорость, цена).
+#   INPUTS: { model, prompt_tokens, completion_tokens, cached_tokens, lm_ms, cost }
+#   OUTPUTS: { None }
+#   LINKS: M-OBSERVABILITY, DF-OBSERVABILITY
+# END_CONTRACT: record_lm
 def record_lm(
     model: str | None,
     prompt_tokens: int,
@@ -71,6 +95,12 @@ def record_lm(
             _lm["tps"].append(round(completion_tokens / (lm_ms / 1000.0), 1))
 
 
+# START_CONTRACT: snapshot
+#   PURPOSE: Агрегированный срез метрик для /metrics и monitor UI.
+#   INPUTS: {}
+#   OUTPUTS: { dict: stages, lm_tokens, recent, counts }
+#   LINKS: M-OBSERVABILITY
+# END_CONTRACT: snapshot
 def snapshot() -> dict:
     with _lock:
         out = {
@@ -123,4 +153,8 @@ def log_line(trace: dict) -> str:
     items = trace.get("items")
     items = f" items={items}" if items else ""
     err = f" ERROR={trace['error']}" if trace.get("error") else ""
-    return f"[trace] {kind} {t}{src}{found}{items}{err}"
+    # GRACE log-маркер: [Component][function][BLOCK_*] (стабильные имена)
+    marker = ""
+    if trace.get("component"):
+        marker = f" [{trace['component']}][{trace.get('function', '?')}]{trace.get('block', '')}"
+    return f"[trace]{marker} {kind} {t}{src}{found}{items}{err}"

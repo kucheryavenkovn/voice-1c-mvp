@@ -1,0 +1,93 @@
+<GraceVerificationDocument graceVersion="4.0">
+  <VD-MAIN>
+
+    <V-M-VOICE-GATEWAY>
+      <TestFiles>
+        <File>tests/test_gateway.py</File>
+        <File>tests/test_extract_json.py</File>
+        <File>tests/test_messages.py</File>
+        <File>tests/test_nonfunctional.py</File>
+        <File>tests/test_snapshots.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_gateway.py tests/test_extract_json.py tests/test_messages.py tests/test_nonfunctional.py tests/test_snapshots.py</Command>
+      <Scenario>LLM intent распознаётся из ответа с мусором/markdown вокруг JSON.</Scenario>
+      <Scenario>Диалоговая лестница заказа сохраняет этап при вопросах об остатках и выходит к LLM на мета-вопросах.</Scenario>
+      <Scenario>Ошибки TTS/LLM возвращают явные ошибки, а не выдуманный успех.</Scenario>
+    </V-M-VOICE-GATEWAY>
+
+    <V-M-1C-ADAPTER>
+      <TestFiles>
+        <File>tests/test_onec.py</File>
+        <File>tests/test_parser.py</File>
+        <File>tests/test_1c_contract.py</File>
+        <File>tests/test_lemmatize.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_onec.py tests/test_parser.py tests/test_1c_contract.py tests/test_lemmatize.py</Command>
+      <Scenario>Запрос остатков возвращает нормализованный контракт, ожидаемый шлюзом.</Scenario>
+      <Scenario>Некорректные или недоступные ответы 1С fail без выдуманных бизнес-данных.</Scenario>
+      <Scenario>Подбор техники и запчастей сохраняет идентичности и артикулы 1С; фаззи-матчинг подтверждается пользователем.</Scenario>
+      <Scenario>Корзина создаёт один ЗаказНаРемонт со всеми позициями и документы источников (перемещения, заказы).</Scenario>
+    </V-M-1C-ADAPTER>
+
+    <V-M-OBSERVABILITY>
+      <TestFiles>
+        <File>tests/test_observability.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_observability.py</Command>
+      <Scenario>Метрики этапов накапливаются, /metrics и /monitor отдают агрегаты и последние трейсы.</Scenario>
+      <Scenario>LM-метрики (модель, токены вход/выход/кэш, ток/с, цена) доступны в snapshot.</Scenario>
+    </V-M-OBSERVABILITY>
+
+    <V-M-MOCK-1C>
+      <TestFiles>
+        <File>tests/test_mock_api_contract.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_mock_api_contract.py</Command>
+      <Scenario>Контракт mock совпадает с контрактом реального бэкенда (ключи, статусы, source).</Scenario>
+    </V-M-MOCK-1C>
+
+    <V-M-STT>
+      <TestFiles>
+        <File>tools/control_scenario.py</File>
+      </TestFiles>
+      <Command>python tools/control_scenario.py (требует поднятого стека и 1С)</Command>
+      <Scenario>Голосовые фикстуры fixtures/voice/*.wav распознаются и проходят диалог 14/14 (см. transcript-last.txt).</Scenario>
+    </V-M-STT>
+
+    <V-M-TTS>
+      <TestFiles>
+        <File>scripts/voice_fixtures.py</File>
+      </TestFiles>
+      <Command>python scripts/voice_fixtures.py (требует tts:8101)</Command>
+      <Scenario>Фразы сценария синтезируются в WAV-фикстуры без ошибок.</Scenario>
+    </V-M-TTS>
+
+    <V-M-WEB-CHAT>
+      <TestFiles>
+        <File>tests/test_ui.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_ui.py -m ui</Command>
+      <Scenario>Веб-чат отдаёт страницу, микрофон/VAD инициализируются.</Scenario>
+    </V-M-WEB-CHAT>
+
+      <V-M-WEB-DIAG>
+      <TestFiles>
+        <File>tests/test_gateway.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_gateway.py::test_diag_page</Command>
+      <Scenarios>
+        <Scenario kind="success">Страница диагностики /diag отдаётся и содержит VAD-элементы.</Scenario>
+      </Scenarios>
+    </V-M-WEB-DIAG>
+
+    <V-M-WEB-MONITOR>
+      <TestFiles>
+        <File>tests/test_observability.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_observability.py</Command>
+      <Scenarios>
+        <Scenario kind="success">Страница /monitor отдаётся и отображает агрегаты этапов и LM-метрики.</Scenario>
+      </Scenarios>
+    </V-M-WEB-MONITOR>
+</VD-MAIN>
+</GraceVerificationDocument>

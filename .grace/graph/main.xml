@@ -1,0 +1,97 @@
+<GraceGraphDocument graceVersion="4.0">
+  <GD-MAIN>
+
+    <M-VOICE-GATEWAY>
+      <Summary>
+        HTTP entry point and orchestration layer for voice, text, dialogue FSM,
+        LLM intent routing and response generation.
+      </Summary>
+      <Path>voice-gateway/app.py</Path>
+
+      <M-STT />
+      <M-TTS />
+      <M-1C-ADAPTER />
+      <M-MOCK-1C />
+      <M-OBSERVABILITY />
+    </M-VOICE-GATEWAY>
+
+    <M-1C-ADAPTER>
+      <Summary>
+        Integration adapter for 1C MCP Toolkit: stock queries,
+        vehicle and part lookup, supply source selection and document creation
+        (ЗаказНаРемонт, ПеремещениеТоваров, ЗаказНаПеремещение, ЗаказПоставщику).
+      </Summary>
+      <Path>voice-gateway/onec.py</Path>
+    </M-1C-ADAPTER>
+
+    <M-OBSERVABILITY>
+      <Summary>
+        In-process timings, LM token metrics, trace aggregation and diagnostics.
+      </Summary>
+      <Path>voice-gateway/metrics.py</Path>
+    </M-OBSERVABILITY>
+
+    <M-STT>
+      <Summary>Russian speech recognition service based on faster-whisper.</Summary>
+      <Path>stt/app.py</Path>
+    </M-STT>
+
+    <M-TTS>
+      <Summary>Russian speech synthesis service based on Piper.</Summary>
+      <Path>tts/app.py</Path>
+    </M-TTS>
+
+    <M-MOCK-1C>
+      <Summary>Deterministic test double for stock and order operations.</Summary>
+      <Path>mock-api/app.py</Path>
+    </M-MOCK-1C>
+
+    <M-WEB-CHAT>
+      <Summary>Browser voice/text dialogue client with VAD, cart panel and tables.</Summary>
+      <Path>voice-gateway/static/index.html</Path>
+      <M-VOICE-GATEWAY />
+    </M-WEB-CHAT>
+
+    <M-WEB-DIAG>
+      <Summary>Browser microphone/VAD diagnostics page.</Summary>
+      <Path>voice-gateway/static/diag.html</Path>
+    </M-WEB-DIAG>
+
+    <M-WEB-MONITOR>
+      <Summary>Browser monitoring UI for latency, LM token and trace metrics.</Summary>
+      <Path>voice-gateway/static/monitor.html</Path>
+      <M-OBSERVABILITY />
+    </M-WEB-MONITOR>
+
+    <DF-VOICE-TURN>
+      <Summary>
+        Browser audio -> STT -> gateway -> LLM intent ->
+        1C operation -> TTS -> browser response.
+      </Summary>
+      <M-WEB-CHAT />
+      <M-STT />
+      <M-VOICE-GATEWAY />
+      <M-1C-ADAPTER />
+      <M-TTS />
+    </DF-VOICE-TURN>
+
+    <DF-PART-ORDER>
+      <Summary>
+        Vehicle selection -> part selection -> stock-source decision ->
+        repair/supply document creation.
+      </Summary>
+      <M-VOICE-GATEWAY />
+      <M-1C-ADAPTER />
+    </DF-PART-ORDER>
+
+    <DF-OBSERVABILITY>
+      <Summary>
+        Runtime timings and trace evidence from gateway to monitoring UI.
+      </Summary>
+      <M-VOICE-GATEWAY />
+      <M-OBSERVABILITY />
+      <M-WEB-MONITOR />
+    </DF-OBSERVABILITY>
+
+  </GD-MAIN>
+</GraceGraphDocument>

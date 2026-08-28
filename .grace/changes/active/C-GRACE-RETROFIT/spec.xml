@@ -1,0 +1,41 @@
+<GraceChangeSpec graceVersion="4.0" status="approved">
+  <C-GRACE-RETROFIT>
+    <Name>C-GRACE-RETROFIT</Name>
+    <Summary>
+      Ретрофит GRACE 4 в voice-1c-mvp: каталог .grace (context/graph/verification),
+      семантическая разметка шести core-модулей, verification-привязки и
+      log-маркеры — без изменения бизнес-поведения.
+    </Summary>
+    <Goals>
+      <Goal>Устойчивая семантическая модель проекта для кодовых агентов.</Goal>
+      <Goal>Прямая навигация: runtime trace -> semantic block -> module -> verification.</Goal>
+    </Goals>
+    <Constraints>
+      <Constraint>Поведение кода не меняется; комментарии и метаданные только.</Constraint>
+      <Constraint>ruff и pytest остаются зелёными.</Constraint>
+    </Constraints>
+    <NonGoals>
+      <NonGoal>Физическое дробление app.py / onec.py на модули (следующий change).</NonGoal>
+      <NonGoal>Новые бизнес-функции.</NonGoal>
+    </NonGoals>
+    <AcceptanceCriteria>
+      <AcceptanceCriterion>grace lint --path . — без ошибок.</AcceptanceCriterion>
+      <AcceptanceCriterion>ruff check . — чисто.</AcceptanceCriterion>
+      <AcceptanceCriterion>pytest -m "not ui" — зелёный.</AcceptanceCriterion>
+    </AcceptanceCriteria>
+    <VerificationIntent>
+      <Item>grace lint --path . фиксирует каталог, граф и verification без ошибок.</Item>
+      <Item>pytest и ruff подтверждают неизменность поведения.</Item>
+    </VerificationIntent>
+    <AffectedAreas>
+      <Area>.grace/</Area>
+      <Area>AGENTS.md</Area>
+      <Area>voice-gateway/app.py</Area>
+      <Area>voice-gateway/onec.py</Area>
+      <Area>voice-gateway/metrics.py</Area>
+      <Area>stt/app.py</Area>
+      <Area>tts/app.py</Area>
+      <Area>mock-api/app.py</Area>
+    </AffectedAreas>
+  </C-GRACE-RETROFIT>
+</GraceChangeSpec>

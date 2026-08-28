@@ -7,6 +7,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+# START_MODULE_CONTRACT
+#   PURPOSE: Russian speech synthesis service (Piper).
+#   SCOPE: POST /tts, /tts-file, health endpoint.
+#   DEPENDS: none
+#   LINKS: M-TTS, DF-VOICE-TURN
+#   ROLE: RUNTIME
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   app
+#   health
+#   tts
+#   tts_file
+# END_MODULE_MAP
+
 VOICE = os.getenv("PIPER_VOICE", "/voices/ru_RU-dmitri-medium.onnx")
 PIPER = shutil.which("piper") or os.getenv("PIPER_BIN", "piper")
 

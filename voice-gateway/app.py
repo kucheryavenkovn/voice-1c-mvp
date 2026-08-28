@@ -14,6 +14,45 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# START_MODULE_CONTRACT
+#   PURPOSE: Оркестрирует голосовой и текстовый диалог с 1С.
+#   SCOPE: HTTP API, dialogue FSM, LLM intent, stock/order routing, TTS response.
+#   DEPENDS: M-STT, M-TTS, M-1C-ADAPTER, M-MOCK-1C, M-OBSERVABILITY
+#   LINKS: M-VOICE-GATEWAY, V-M-VOICE-GATEWAY, DF-VOICE-TURN, DF-PART-ORDER
+#   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   app - FastAPI application instance
+#   chat_history - история чата по chat_id
+#   chat_append - добавить ход в историю
+#   _dialog_state - состояние FSM диалога
+#   _dialog_turn - один ход лестницы заказа
+#   _norm_quantity - нормализация количества
+#   _extract_qty - извлечь количество из реплики
+#   _render_state - состояние сценария для промпта
+#   lm_phrase - очеловечить черновик ответа
+#   lm_intent - LLM-распознавание намерения
+#   build_answer - сборка текстового ответа
+#   build_stock_table - таблица остатков
+#   build_parts_table - таблица вариантов
+#   build_cart_table - таблица корзины
+#   _render_state/_extract_qty - состояние и количество
+#   lm_phrase - очеловечивание ответа
+#   _dialog_turn - ход FSM (переопределение экспорта)
+#   call_stock_api - остатки через 1С/mock
+#   call_order_api - заказ товара через 1С/mock
+#   call_part_api - разовая заявка запчасти
+#   call_lookup_vehicle - шаг идентификации техники
+#   call_lookup_parts - шаг идентификации запчастей
+#   orchestrate - полный ход диалога
+#   _dialog_state - состояние FSM (доступ из orchestrate)
+#   ask/ask_text - диалоговые endpoints (audio/text)
+#   transcribe/speak - служебные endpoints
+#   health/get_metrics - health и метрики
+# END_MODULE_MAP
+
 STT_URL = os.getenv("STT_URL", "http://stt:8000")
 TTS_URL = os.getenv("TTS_URL", "http://tts:8000")
 STOCK_API_URL = os.getenv("STOCK_API_URL", "http://mock-api:8000/api/stock")
@@ -490,6 +529,15 @@ def _cart_summary(st: dict) -> str:
     return f"Техника: {st['vehicle']}. Позиции: " + "; ".join(lines) + "."
 
 
+# START_CONTRACT: _dialog_turn
+#   PURPOSE: Один детерминированный переход FSM заказа запчасти.
+#   INPUTS: { st: dict - состояние диалога, text: str - реплика,
+#             t_short: str - нормализованная реплика, qty: int, history }
+#   OUTPUTS: { dict - found/message/table/source текущего шага }
+#   SIDE_EFFECTS: Изменяет st (стадии, корзина); вызывает lookup/1С/LLM.
+#   LINKS: M-VOICE-GATEWAY, M-1C-ADAPTER, DF-PART-ORDER
+# END_CONTRACT: _dialog_turn
+# START_BLOCK_DIALOG_FSM
 def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> dict:
     """Один ход детерминированной лестницы (корзина позиций). Выход к LLM:
     мета-вопросы, болтовня, 2 подряд неудачи — человечный ответ с состоянием."""
@@ -734,6 +782,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
     return {"found": False, "message": "Неизвестный шаг диалога.", "source": "1c"}
 
 
+# END_BLOCK_DIALOG_FSM
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTMLResponse(content=(HERE / "static" / "index.html").read_text(encoding="utf-8"))
@@ -784,8 +833,17 @@ def extract_json(text: str) -> dict | None:
         return None
 
 
+# START_CONTRACT: lm_intent
+#   PURPOSE: Распознать намерение из реплики через OpenAI-compatible LLM.
+#   INPUTS: { text: str, history: deque|None, extra_system: str|None }
+#   OUTPUTS: { (intent dict|None, raw str) }
+#   SIDE_EFFECTS: Метрики record_lm (токены, кэш, стоимость, ток/с).
+#   LINKS: M-VOICE-GATEWAY, DF-VOICE-TURN
+# END_CONTRACT: lm_intent
+# START_BLOCK_LLM_INTENT
 def lm_intent(
     text: str, history: deque | None = None, extra_system: str | None = None
+# END_BLOCK_LLM_INTENT
 ) -> tuple[dict | None, str]:
     model = resolve_model()
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
@@ -1071,6 +1129,13 @@ def call_stock(item: str | None, warehouse: str | None, action: str | None = Non
     return call_stock_api(item, warehouse)
 
 
+# START_CONTRACT: build_answer
+#   PURPOSE: Собрать текстовый ответ по интенту и результату бэкенда.
+#   INPUTS: { text, intent dict|None, stock dict|None }
+#   OUTPUTS: { str - текст для озвучки }
+#   LINKS: M-VOICE-GATEWAY
+# END_CONTRACT: build_answer
+# START_BLOCK_ANSWER_BUILD
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     action = (intent or {}).get("action")
     item = (intent or {}).get("item")
@@ -1109,6 +1174,15 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     )
 
 
+# END_BLOCK_ANSWER_BUILD
+# START_CONTRACT: orchestrate
+#   PURPOSE: Полный ход диалога: FSM корзины -> LLM NLU -> бэкенд -> TTS.
+#   INPUTS: { text: str - реплика, chat_id: str|None - идентификатор чата }
+#   OUTPUTS: { audio bytes, headers (X-Answer/X-Table/X-Cart), trace metrics }
+#   SIDE_EFFECTS: Обновляет _DIALOG_STATES/_CHATS; обращается к 1С/LM/TTS.
+#   LINKS: M-VOICE-GATEWAY, M-1C-ADAPTER, DF-VOICE-TURN, DF-PART-ORDER
+# END_CONTRACT: orchestrate
+# START_BLOCK_ROUTE_INTENT
 def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dict]:
     """Run LM → stock → TTS and return (audio, headers, trace_extra).
 
@@ -1198,6 +1272,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         stock_ms = metrics.ms() - t_stock
         answer = lm_phrase(stock.get("message") or "Уточните.", _render_state(st))
         chat_append(history, text, answer)
+        dialog_trace = {"component": "VoiceGateway", "function": "_dialog_turn", "block": st["stage"].upper()}
         intent = {"action": f"dialog:{st['stage']}"}
         t_tts = metrics.ms()
         tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
@@ -1222,6 +1297,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
                 "found": stock.get("found"),
                 "items": 0,
                 "answer_len": len(answer),
+                **dialog_trace,
             },
         )
 
@@ -1345,6 +1421,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     return tts_r.content, headers, extra
 
 
+# END_BLOCK_ROUTE_INTENT
 def _finish(headers: dict, trace: dict) -> Response:
     trace["total_ms"] = max(0.0, metrics.ms() - trace.pop("_t0", metrics.ms()))
     headers["X-Timings"] = metrics.fmt_timings(trace)
@@ -1530,3 +1607,20 @@ def transcript(chat_id: str):
 @app.get("/monitor", response_class=HTMLResponse)
 def monitor():
     return HTMLResponse(content=(HERE / "static" / "monitor.html").read_text(encoding="utf-8"))
+
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "_norm_quantity",
+    "app",
+    "build_answer",
+    "call_lookup_parts",
+    "call_lookup_vehicle",
+    "call_order_api",
+    "call_part_api",
+    "call_stock_api",
+    "chat_append",
+    "chat_history",
+    "lm_intent",
+    "orchestrate",
+]

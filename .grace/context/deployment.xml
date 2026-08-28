@@ -1,0 +1,30 @@
+<GraceDeployment graceVersion="4.0">
+  <Applicability>applicable</Applicability>
+  <ProjectName>voice-1c-mvp</ProjectName>
+
+  <Environments>
+    <Environment name="dev-local">
+      <Notes>Windows-хост: Docker Desktop + 1С:ERP (толстый клиент) + vLLM. Разработка и живые проверки.</Notes>
+    </Environment>
+  </Environments>
+
+  <Components>
+    <Component name="stt" port="8100" run="docker compose: stt" gpu="true" note="faster-whisper medium/ru" />
+    <Component name="tts" port="8101" run="docker compose: tts" note="Piper ru_RU-dmitri-medium" />
+    <Component name="mock-api" port="8102" run="docker compose: mock-api" note="in-memory контракт 1С, фоллбэк" />
+    <Component name="voice-gateway" port="8103" run="docker compose: voice-gateway" note="оркестратор + веб-чат + мониторинг" />
+    <Component name="1C MCP Toolkit" port="6003" run="1С:ERP, внешняя обработка MCP_Toolkit.epf, встроенный сервер" note="execute_query / execute_code / get_metadata" />
+    <Component name="vLLM" port="18020" run="хост, модель qwen3.8-27b (W4A16)" note="OpenAI-compatible /v1, enable_thinking=false" />
+  </Components>
+
+  <Config>
+    <Item file=".env">LM_BASE_URL/LM_API_KEY/LM_MODEL, ONEC_BASE_URL, STOCK_BACKEND, ORDER_API_URL, ONEC_ORDER_DOC_TYPE, ENGINEER_WAREHOUSE/CURRENT_OP_WAREHOUSE/OTHER_OP_WAREHOUSE, LM_PRICE_*</Item>
+    <Item file="docker-compose.yml">проброс env в контейнеры, extra_hosts host.docker.internal</Item>
+  </Config>
+
+  <Checks>
+    <Check>docker compose ps — 4 сервиса Up</Check>
+    <Check>Invoke-RestMethod http://127.0.0.1:8103/health — ok:true, onec:true, lm_base_url</Check>
+    <Check>./q1c.ps1 -Query 'ВЫБРАТЬ 1' — success=True (MCP-обработка запущена)</Check>
+  </Checks>
+</GraceDeployment>

@@ -1,0 +1,31 @@
+<GraceRequirements graceVersion="4.0">
+  <Applicability>voice-1c-mvp</Applicability>
+  <ProjectName>voice-1c-mvp</ProjectName>
+
+  <Annotation>
+    Локальный голосовой ассистент для работы с данными 1С:
+    распознавание русской речи, определение намерения,
+    проверка остатков, подбор запчастей для техники,
+    создание документов обеспечения (ЗаказНаРемонт, перемещения,
+    заказы поставщику) и голосовой ответ.
+  </Annotation>
+
+  <Keywords>
+    voice, 1c, stt, tts, llm, fastapi, mcp, inventory, parts, dialogue-fsm, erp
+  </Keywords>
+
+  <Goals>
+    <Goal>Поддерживать полный голосовой цикл audio -> STT -> orchestration -> 1C -> TTS.</Goal>
+    <Goal>Получать складские факты только из 1С или явно обозначенного mock backend.</Goal>
+    <Goal>Поддерживать детерминированный сценарий заказа запчасти от техники (лестница подтверждений).</Goal>
+    <Goal>Формировать один ЗаказНаРемонт со всеми позициями корзины и документы источников обеспечения.</Goal>
+  </Goals>
+
+  <Constraints>
+    <Constraint>LLM не является источником складских данных.</Constraint>
+    <Constraint>Бизнес-состояние диалога хранится и изменяется backend FSM (детерминированная лестница подтверждений).</Constraint>
+    <Constraint>Ошибки 1С не должны превращаться LLM в выдуманные успешные ответы.</Constraint>
+    <Constraint>Mock fallback должен быть явно различим от результата реальной 1С (поле source).</Constraint>
+    <Constraint>Озвучивается только текст; таблицы и ссылки — визуальные элементы веб-чата.</Constraint>
+  </Constraints>
+</GraceRequirements>

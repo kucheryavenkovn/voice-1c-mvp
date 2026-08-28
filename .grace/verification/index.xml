@@ -1,0 +1,19 @@
+<GraceVerificationIndex graceVersion="4.0">
+  <Applicability>applicable</Applicability>
+  <VerificationDocuments>
+    <VD-MAIN>
+      <Path>verification/main.xml</Path>
+      <Owns>
+        <V-M-VOICE-GATEWAY />
+        <V-M-1C-ADAPTER />
+        <V-M-OBSERVABILITY />
+        <V-M-MOCK-1C />
+        <V-M-STT />
+        <V-M-TTS />
+        <V-M-WEB-CHAT />
+        <V-M-WEB-DIAG />
+        <V-M-WEB-MONITOR />
+      </Owns>
+    </VD-MAIN>
+  </VerificationDocuments>
+</GraceVerificationIndex>

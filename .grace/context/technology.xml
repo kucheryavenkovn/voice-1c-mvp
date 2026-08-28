@@ -1,0 +1,37 @@
+<GraceTechnology graceVersion="4.0">
+  <Applicability>voice-1c-mvp</Applicability>
+  <ProjectName>voice-1c-mvp</ProjectName>
+
+  <Languages>
+    <Language name="python" version="3.11+" role="backend" />
+    <Language name="javascript" version="ES2020" role="web-ui" />
+    <Language name="bsl" version="1С:Предприятие 8.3" role="1c-integration" />
+  </Languages>
+
+  <Runtime>FastAPI + Uvicorn (voice-gateway, stt, tts, mock-api), Docker Compose</Runtime>
+
+  <Frameworks>
+    <Framework name="FastAPI" purpose="HTTP API всех сервисов" />
+    <Framework name="faster-whisper" purpose="STT (medium, ru)" />
+    <Framework name="Piper" purpose="TTS (ru_RU-dmitri-medium)" />
+    <Framework name="pymorphy3" purpose="лемматизация русского для поиска" />
+    <Framework name="pytest + syrupy" purpose="тесты и снапшоты фразировок" />
+    <Framework name="ruff" purpose="lint/format" />
+  </Frameworks>
+
+  <External>
+    <Service name="vLLM (OpenAI-compatible)" endpoint="host:18020/v1" model="qwen3.8-27b" note="enable_thinking=false, Bearer auth" />
+    <Service name="1C:ERP + MCP Toolkit" endpoint="host:6003/api" tools="execute_query, execute_code, get_metadata, get_event_log" />
+    <Service name="1C:ERP" note="Справочник.Номенклатура/Склады/ОбъектыЭксплуатации, Документ.ЗаказПоставщику/ЗаказНаРемонт/ПеремещениеТоваров/ЗаказНаПеремещение/ПриобретениеТоваровУслуг" />
+  </External>
+
+  <Infra>
+    <Item>Docker Compose: stt:8100, tts:8101, mock-api:8102, voice-gateway:8103</Item>
+    <Item>host.docker.internal для доступа к хостовым LM и 1С из контейнеров</Item>
+  </Infra>
+
+  <Tooling>
+    <Item>grace CLI 4.0.5 (bun) — lint/status/verification по каталогу .grace/</Item>
+    <Item>q1c.ps1 — ad-hoc запросы к живой 1С</Item>
+  </Tooling>
+</GraceTechnology>

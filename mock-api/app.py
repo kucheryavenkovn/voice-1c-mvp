@@ -1,6 +1,32 @@
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 
+# START_MODULE_CONTRACT
+#   PURPOSE: Deterministic test double for 1C stock/order contract.
+#   SCOPE: GET/POST /api/stock, POST /api/orders, GET /api/orders, health.
+#   DEPENDS: none
+#   LINKS: M-MOCK-1C, V-M-MOCK-1C
+#   ROLE: RUNTIME
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   app
+#   STOCK
+#   ORDER_STATUS
+#   Warehouse
+#   StockItem
+#   StockResponse
+#   StockBody
+#   OrderBody
+#   OrderResponse
+#   lookup
+#   health
+#   get_stock
+#   get_stock_post
+#   create_order
+#   list_orders
+# END_MODULE_MAP
+
 # tiny in-memory "1C" stock database (lowercased keys for lookup)
 STOCK = {
     "молоко": 42,

@@ -6,6 +6,21 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 from pydantic import BaseModel
 
+# START_MODULE_CONTRACT
+#   PURPOSE: Russian speech recognition service (faster-whisper).
+#   SCOPE: POST /stt and /v1/audio/transcriptions, health endpoint.
+#   DEPENDS: none
+#   LINKS: M-STT, DF-VOICE-TURN
+#   ROLE: RUNTIME
+# END_MODULE_CONTRACT
+#
+# START_MODULE_MAP
+#   app
+#   health
+#   transcribe
+#   transcriptions
+# END_MODULE_MAP
+
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ru") or None
 
