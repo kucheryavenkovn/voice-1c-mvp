@@ -467,45 +467,29 @@ def query_stock(item: str, warehouse: str | None = None) -> dict:
 def stock_for_item(item: str) -> dict:
     """Остатки позиции по трём складам кейса (только чтение) для выбора
     источника обеспечения: {'E': x, 'C': y, 'O': z}.
-    Два запроса: сначала номенклатура по токенам, потом остатки по её ссылке."""
-    conds = _token_matchconds("Номенклатура", item)
-    q_n = (
-        "ВЫБРАТЬ ПЕРВЫЕ 1 Номенклатура.Ссылка КАК Ссылка "
-        "ИЗ Справочник.Номенклатура КАК Номенклатура "
-        "ГДЕ НЕ Номенклатура.ЭтоГруппа И НЕ Номенклатура.ПометкаУдаления И " + conds
+    Один запрос: точный артикул (если токен один) или токены наименования —
+    без ссылок-параметров (парсер их не переваривает)."""
+    item_s = _strip_service(item)
+    wh_list = ", ".join(f'"{w}"' for w in (ENGINEER_WAREHOUSE, CURRENT_OP_WAREHOUSE, OTHER_OP_WAREHOUSE))
+    art = item_s.strip()
+    if art and " " not in art:
+        item_cond = f'ВРЕГ(Остатки.Номенклатура.Артикул) = ВРЕГ("{art}")'
+    else:
+        item_cond = _token_matchconds("Остатки.Номенклатура", item_s)
+    q = (
+        "ВЫБРАТЬ Остатки.Склад.Наименование КАК Склад, СУММА(Остатки.ВНаличииОстаток) КАК Ост "
+        "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК Остатки "
+        "ГДЕ " + item_cond + " И Остатки.Склад.Наименование В (" + wh_list + ") "
+        "СГРУППИРОВАТЬ ПО Остатки.Склад.Наименование"
     )
-    r = requests.post(
-        _api_url("execute_query"), json={"query": q_n, "limit": 5}, timeout=ONEC_TIMEOUT
-    )
+    r = requests.post(_api_url("execute_query"), json={"query": q, "limit": 10}, timeout=ONEC_TIMEOUT)
     r.raise_for_status()
     body = r.json()
     if not body.get("success"):
         raise RuntimeError(f"1C execute_query error: {body.get('error')}")
     _c, rows = _parse_table(body.get("data", ""))
-    if not rows:
-        return {"E": 0, "C": 0, "O": 0, "ref": None}
-    ref_desc = _object_description(rows[0][0])
-    q_s = (
-        "ВЫБРАТЬ Остатки.Склад.Наименование КАК Склад, СУММА(Остатки.ВНаличииОстаток) КАК Ост "
-        "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК Остатки "
-        "ГДЕ Остатки.Номенклатура = &Ном И Остатки.Склад.Наименование В ("
-        + ", ".join(
-            f'"{w}"' for w in (ENGINEER_WAREHOUSE, CURRENT_OP_WAREHOUSE, OTHER_OP_WAREHOUSE)
-        )
-        + ") СГРУППИРОВАТЬ ПО Остатки.Склад.Наименование"
-    )
-    r2 = requests.post(
-        _api_url("execute_query"),
-        json={"query": q_s, "params": {"Ном": ref_desc}, "limit": 10},
-        timeout=ONEC_TIMEOUT,
-    )
-    r2.raise_for_status()
-    b2 = r2.json()
-    if not b2.get("success"):
-        raise RuntimeError(f"1C execute_query error: {b2.get('error')}")
-    _c, rows2 = _parse_table(b2.get("data", ""))
-    out = {"E": 0, "C": 0, "O": 0, "ref": ref_desc}
-    for row in rows2:
+    out = {"E": 0, "C": 0, "O": 0}
+    for row in rows:
         if not row or not row[0]:
             continue
         wh = str(row[0]).strip()

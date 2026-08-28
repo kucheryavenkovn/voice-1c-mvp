@@ -141,6 +141,42 @@ _YES_WORDS = {
 }
 _NO_WORDS = {"нет", "не", "не та", "не он", "не она", "неверно", "no", "n"}
 _ABORT_WORDS = {"стоп", "отмена", "отмени", "хватит", "отменить"}
+# личные/обиходные упоминания складов -> настроенные склады кейса
+_WAREHOUSE_ALIASES = (
+    ("мой склад", onec.ENGINEER_WAREHOUSE),
+    ("моём складе", onec.ENGINEER_WAREHOUSE),
+    ("моем складе", onec.ENGINEER_WAREHOUSE),
+    ("мой", onec.ENGINEER_WAREHOUSE),
+    ("склад инженера", onec.ENGINEER_WAREHOUSE),
+    ("у себя", onec.ENGINEER_WAREHOUSE),
+    ("текущее оп", onec.CURRENT_OP_WAREHOUSE),
+    ("текущего оп", onec.CURRENT_OP_WAREHOUSE),
+    ("склад оп", onec.CURRENT_OP_WAREHOUSE),
+    ("наше оп", onec.CURRENT_OP_WAREHOUSE),
+    ("нашем оп", onec.CURRENT_OP_WAREHOUSE),
+    ("другое оп", onec.OTHER_OP_WAREHOUSE),
+    ("другого оп", onec.OTHER_OP_WAREHOUSE),
+    ("центральный склад", onec.OTHER_OP_WAREHOUSE),
+    ("на центральном", onec.OTHER_OP_WAREHOUSE),
+)
+
+
+def _map_warehouse(name: str | None) -> str | None:
+    """'мой склад' -> Склад инженера, 'склад текущего ОП' -> ..., иначе как есть."""
+    if not name:
+        return name
+    t = name.lower()
+    for alias, target in _WAREHOUSE_ALIASES:
+        if alias in t:
+            return target
+    return name
+
+
+def _looks_stock_query(text: str) -> bool:
+    t = (text or "").lower()
+    return "сколько" in t or "остаток" in t or "осталось" in t
+
+
 _FILLERS = {
     "нужен",
     "нужна",
@@ -377,7 +413,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
                 "source": "1c",
             }
         res = call_lookup_parts(st["item"], st["vehicle"])
-        res["table"] = build_parts_table(res.get("parts", []), st["vehicle"])
+        res["table"] = _parts_table_with_stock(res.get("parts", []), st["vehicle"])
         if res.get("found") and len(res.get("parts", [])) == 1:
             st["part"] = res["parts"][0]
             st["stage"] = "await_part_confirm"
@@ -408,7 +444,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         res = call_lookup_parts(_strip_fillers(text), st["vehicle"])
         if not res.get("found") and st["item"]:
             res = call_lookup_parts(f"{st['item']} {_strip_fillers(text)}", st["vehicle"])
-        res["table"] = build_parts_table(res.get("parts", []), st["vehicle"])
+        res["table"] = _parts_table_with_stock(res.get("parts", []), st["vehicle"])
         if res.get("found") and len(res.get("parts", [])) == 1:
             st["part"] = res["parts"][0]
             st["stage"] = "await_part_confirm"
@@ -687,6 +723,21 @@ def build_parts_table(parts: list, vehicle: str | None) -> dict | None:
     }
 
 
+def _parts_table_with_stock(parts: list, vehicle: str | None) -> dict | None:
+    """Варианты + остатки по трём складам кейса (колонки «У вас / Тек. ОП / Др. ОП»)."""
+    table = build_parts_table(parts, vehicle)
+    if not table:
+        return None
+    table["headers"] = table["headers"] + ["У вас", "Тек. ОП", "Др. ОП"]
+    for row, p in zip(table["rows"], parts, strict=False):
+        try:
+            s = onec.stock_for_item(p.get("article") or p["name"])
+            row += [s["E"], s["C"], s["O"]]
+        except Exception:
+            row += ["?", "?", "?"]
+    return table
+
+
 def build_cart_table(st: dict, done: bool = False) -> dict | None:
     """Таблица корзины: техника в заголовке, позиции со складами-источниками."""
     items = st.get("items") or []
@@ -859,7 +910,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         )
 
     # 1) активная лестница: ход обрабатывает автомат состояний (без LLM),
-    #    кроме мета-вопросов/болтовни/2 подряд неудач — там LLM с состоянием
+    #    кроме мета-вопросов/болтовни/2 подряд неудач — там LLM с состоянием.
+    #    Вопросы об остатках внутри маршрута — разрешены, этап сохраняется.
     if st is not None and st["stage"] in (
         "await_vehicle",
         "await_vehicle_confirm",
@@ -867,6 +919,46 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         "await_part_confirm",
         "await_order_confirm",
     ):
+        if _looks_stock_query(text):
+            intent, raw = lm_intent(text, history, extra_system=_render_state(st))
+            if (intent or {}).get("action") in ("get_stock", "list_stock"):
+                item_s = (intent or {}).get("item")
+                wh_s = _map_warehouse((intent or {}).get("warehouse"))
+                t_stock = metrics.ms()
+                try:
+                    stock = call_stock_api(item_s, wh_s)
+                except Exception as e:
+                    stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
+                stock_ms = metrics.ms() - t_stock
+                answer = build_answer(text, intent, stock)
+                table = build_stock_table(stock, (intent or {}).get("action"))
+                chat_append(history, text, answer)
+                t_tts = metrics.ms()
+                tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
+                tts_r.raise_for_status()
+                headers = {
+                    "X-Question": urllib.parse.quote(text),
+                    "X-Intent": urllib.parse.quote(json.dumps(intent or {}, ensure_ascii=False)),
+                    "X-Answer": urllib.parse.quote(answer),
+                    "X-Table": urllib.parse.quote(json.dumps(table or {}, ensure_ascii=False)),
+                    "X-Cart": urllib.parse.quote(json.dumps(_cart_view(st), ensure_ascii=False)),
+                }
+                return (
+                    tts_r.content,
+                    headers,
+                    {
+                        "lm_ms": metrics.ms() - t_stock - stock_ms,
+                        "stock_ms": stock_ms,
+                        "tts_ms": metrics.ms() - t_tts,
+                        "stock_src": stock.get("source"),
+                        "item": item_s,
+                        "warehouse": wh_s,
+                        "found": stock.get("found"),
+                        "items": len(stock.get("items", [])) if stock else 0,
+                        "answer_len": len(answer),
+                    },
+                )
+            # не похоже на остатки — обычный ход машины (ниже)
         t_stock = metrics.ms()
         stock = _dialog_turn(st, text, t_short, st.get("qty") or 1, history)
         stock_ms = metrics.ms() - t_stock
@@ -906,7 +998,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
 
     stock = None
     item = (intent or {}).get("item")
-    warehouse = (intent or {}).get("warehouse")
+    warehouse = _map_warehouse((intent or {}).get("warehouse"))
     action = (intent or {}).get("action")
     if action == "request_part" and (item or (intent or {}).get("vehicle")):
         # старт лестницы: строгое подтверждение техники по справочнику 1С
