@@ -55,13 +55,19 @@ SYSTEM_PROMPT = (
     '{"action": "order_part", "item": "<товар>", "quantity": <целое число>, "warehouse": null}\n'
     "В поле quantity подставь количество ЦЕЛЫМ ЧИСЛОМ цифрой ('пять' -> 5, 'три' -> 3); "
     "если количество не названо — 1. Товар и склад — по тем же правилам, что выше.\n"
-    "4) Если просят запчасть ДЛЯ ТЕХНИКИ или запчасть в контексте ремонта "
-    "('нужен диск', 'нужен диск для кировца', 'закажи фильтр для мтз') — верни:\n"
-    '{"action": "request_part", "item": "<запчасть>", "vehicle": "<техника '
-    'как назвали или null>", "quantity": <целое число, по умолчанию 1>}\n'
+    "4) ЗАКАЗ ЗАПЧАСТИ — ВСЕГДА НАЧИНАЕМ С ТЕХНИКИ И СТРОГО ПО СПРАВОЧНИКУ 1С. "
+    "Если пользователь назвал ТЕХНИКУ (марку/модель/госномер), а запчасть ещё не "
+    "названа — верни:\n"
+    '{"action": "request_part", "item": null, "vehicle": "<техника>"}\n'
+    "Шлюз сам проверит технику по справочнику 1С (не найдена — сообщит, что "
+    "заказать под неё нельзя) и запросит запчасть. Если названы И техника, И "
+    "запчасть ('нужен диск для кировца') — верни:\n"
+    '{"action": "request_part", "item": "<запчасть>", "vehicle": "<техника>", '
+    '"quantity": <целое число, по умолчанию 1>}\n'
     "В item — только запчасть, в vehicle — только техника. Подтверждения и выбор "
     "вариантов выполняет шлюз — не задавай встречных вопросов о подтверждении "
-    "сам, не выполняй заказ по этой реплике сам.\n"
+    "сам, не выполняй заказ по этой реплике сам. НЕ отвечай chat'ом на реплику, "
+    "в которой пользователь называет технику — это всегда request_part.\n"
     "5) Для ЛЮБОЙ другой реплики (общий вопрос, приветствие, беседа) — верни:\n"
     '{"action": "chat", "answer": "<краткий естественный ответ на русском, '
     'как в телефонном разговоре, 1-3 предложения>"}\n'
@@ -172,7 +178,17 @@ def _dialog_state(chat_id: str | None) -> dict | None:
     if not chat_id:
         return None
     return _DIALOG_STATES.setdefault(
-        chat_id, {"stage": "idle", "item": None, "vehicle": None, "part": None, "qty": 1}
+        chat_id,
+        {
+            "stage": "idle",
+            "item": None,  # запчасть, как назвал пользователь (для поиска)
+            "vehicle": None,  # подтверждённая техника (точная запись из 1С)
+            "part": None,  # {"name","article"} — подтверждённая позиция
+            "qty": 1,
+            "items": [],  # корзина: [{"part":{name,article},"qty":n,"source":"E|C|O|S"}]
+            "docs": None,  # созданные документы последнего заказа
+            "fails": 0,  # подряд неудач (для выхода к LLM-диалогу)
+        },
     )
 
 
@@ -190,17 +206,157 @@ def _strip_fillers(text: str) -> str:
 
 
 def _dialog_reset(st: dict) -> None:
-    st.update({"stage": "idle", "item": None, "vehicle": None, "part": None, "qty": 1})
+    st.update(
+        {
+            "stage": "idle",
+            "item": None,
+            "vehicle": None,
+            "part": None,
+            "qty": 1,
+            "items": [],
+            "docs": None,
+            "fails": 0,
+        }
+    )
 
 
-def _dialog_turn(st: dict, text: str, t_short: str, qty: int) -> dict:
-    """Один ход детерминированной лестницы. Возвращает dict как от бэкенда."""
+_ORDER_WORDS = {
+    "оформи",
+    "оформляй",
+    "оформить",
+    "достаточно",
+    "всё",
+    "все",
+    "создавай",
+    "создать",
+    "оформи заказ",
+    "хватит",
+}
+_META_HINTS = (
+    "каки",
+    "повтори",
+    "напомни",
+    "что ты",
+    "что за",
+    "вариант",
+    "предлага",
+    "перечисли",
+    "почему",
+    "зачем",
+    "ты понял",
+)
+
+
+def _looks_meta(text: str) -> bool:
+    t = (text or "").lower()
+    return t.rstrip().endswith("?") or any(h in t for h in _META_HINTS)
+
+
+def _classify_utterance(text: str) -> str:
+    """Что назвал пользователь: article (код/артикул), name (номенклатура),
+    meta (вопрос системе), chatter (болтовня/короткое)."""
+    t = _norm_short(text)
+    if _looks_meta(text):
+        return "meta"
+    if t in _YES_WORDS or t in _NO_WORDS or t in _ORDER_WORDS or t in _ABORT_WORDS:
+        return "command"
+    toks = [x for x in t.split() if x]
+    if any(any(ch.isdigit() for ch in x) for x in toks):
+        return "article"
+    for x in toks:
+        if onec._article_variants(x):
+            return "article"
+    if len(t) <= 3 or t in ("ага", "ок", "окей", "ну", "вот", "так", "угу"):
+        return "chatter"
+    return "name"
+
+
+def _render_state(st: dict) -> str:
+    """Структура бизнес-данных сценария для промпта (бэкенд — источник истины)."""
+    lines = ["СОСТОЯНИЕ СЦЕНАРИЯ ЗАКАЗА ЗАПЧАСТИ (ведёт бэкенд; факты не искажай):"]
+    lines.append(f"- Техника: {st.get('vehicle') or 'не выбрана'}")
+    if st.get("part"):
+        p = st["part"]
+        lines.append(f"- Запчасть (подтверждена): {p.get('name')} (арт. {p.get('article', '')})")
+    elif st.get("item"):
+        lines.append(f"- Запчасть (как назвал пользователь): {st['item']}")
+    else:
+        lines.append("- Запчасть: не названа")
+    lines.append(f"- Количество: {st.get('qty', 1)}")
+    lines.append(f"- Позиций в заказе: {len(st.get('items') or [])}")
+    for i, it in enumerate(st.get("items") or [], 1):
+        lines.append(
+            f"  {i}) {it['part']['name']} (арт. {it['part'].get('article', '')}) — "
+            f"{it['qty']} шт, {onec._SOURCE_NAMES.get(it['source'], it['source'])}"
+        )
+    return "\n".join(lines)
+
+
+def lm_phrase(canned: str, state_summary: str) -> str:
+    """Озвучить ответ «по-человечески», не искажая факты. Ошибки и проблемы —
+    передаются дословно (пересказ ошибок LLM'ом запрещён). При любой проблеме —
+    черновик бэкенда (детерминированный текст)."""
+    if not canned or "не удалось" in canned.lower() or "ошибк" in canned.lower():
+        return canned
+    try:
+        payload = {
+            "model": resolve_model(),
+            "temperature": 0.3,
+            "max_tokens": 200,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты голосовой складской ассистент. Тебе дано состояние "
+                        "сценария и черновик ответа. Переформулируй черновик "
+                        "коротко и естественно (1-2 предложения), как человек. "
+                        "Номера, артикулы, названия и количества оставь точными. "
+                        "Если в черновике есть вопрос — обязательно сохрани его "
+                        "(только один). Новых фактов не добавляй. "
+                        "Верни только текст ответа."
+                    ),
+                },
+                {"role": "user", "content": f"{state_summary}\n\nЧерновик ответа: {canned}"},
+            ],
+        }
+        if not LM_ENABLE_THINKING:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        r = requests.post(
+            f"{LM_BASE_URL}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {LM_API_KEY}"},
+            timeout=15,
+        )
+        content = (r.json()["choices"][0]["message"]["content"] or "").strip()
+        if not content or content.startswith("{") or len(content) > 500:
+            return canned
+        return content
+    except Exception:
+        return canned
+
+
+def _cart_summary(st: dict) -> str:
+    lines = []
+    for i, it in enumerate(st["items"], 1):
+        lines.append(
+            f"{i}) {it['part']['name']} (арт. {it['part'].get('article', '')}) — "
+            f"{it['qty']} шт, {onec._SOURCE_NAMES.get(it['source'], it['source'])}"
+        )
+    return f"Техника: {st['vehicle']}. Позиции: " + "; ".join(lines) + "."
+
+
+def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> dict:
+    """Один ход детерминированной лестницы (корзина позиций). Выход к LLM:
+    мета-вопросы, болтовня, 2 подряд неудачи — человечный ответ с состоянием."""
     stage = st["stage"]
     if stage == "await_vehicle":
         res = call_lookup_vehicle(_strip_fillers(text))
         if res.get("found") and len(res.get("vehicles", [])) == 1:
             st["vehicle"] = res["vehicles"][0]
             st["stage"] = "await_vehicle_confirm"
+            st["fails"] = 0
+        elif not res.get("found"):
+            st["fails"] = st.get("fails", 0) + 1
         return res
     if stage == "await_vehicle_confirm":
         if t_short in _NO_WORDS:
@@ -210,7 +366,18 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int) -> dict:
                 "message": "Хорошо. Назовите другую технику — марку, модель или госномер.",
                 "source": "1c",
             }
+        if not st["item"]:
+            st["stage"] = "await_part"
+            return {
+                "found": True,
+                "message": (
+                    f"Техника подтверждена: {st['vehicle']}. Какая именно запчасть "
+                    "нужна? Назовите название или артикул."
+                ),
+                "source": "1c",
+            }
         res = call_lookup_parts(st["item"], st["vehicle"])
+        res["table"] = build_parts_table(res.get("parts", []), st["vehicle"])
         if res.get("found") and len(res.get("parts", [])) == 1:
             st["part"] = res["parts"][0]
             st["stage"] = "await_part_confirm"
@@ -218,12 +385,36 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int) -> dict:
             st["stage"] = "await_part"
         return res
     if stage == "await_part":
+        if t_short in _ORDER_WORDS:
+            if st["items"]:
+                st["stage"] = "await_order_confirm"
+                return {
+                    "found": True,
+                    "message": _cart_summary(st) + " Создаём документы?",
+                    "table": build_cart_table(st),
+                    "source": "1c",
+                }
+            return {
+                "found": False,
+                "message": "В заказе пока нет позиций. Назовите запчасть.",
+                "source": "1c",
+            }
+        kind = _classify_utterance(text)
+        if kind in ("meta", "chatter") or st.get("fails", 0) >= 2:
+            st["fails"] = 0
+            intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
+            ans = build_answer(text, intent, None)
+            return {"found": False, "message": ans, "source": "llm"}
         res = call_lookup_parts(_strip_fillers(text), st["vehicle"])
         if not res.get("found") and st["item"]:
             res = call_lookup_parts(f"{st['item']} {_strip_fillers(text)}", st["vehicle"])
+        res["table"] = build_parts_table(res.get("parts", []), st["vehicle"])
         if res.get("found") and len(res.get("parts", [])) == 1:
             st["part"] = res["parts"][0]
             st["stage"] = "await_part_confirm"
+            st["fails"] = 0
+        else:
+            st["fails"] = st.get("fails", 0) + 1
         return res
     if stage == "await_part_confirm":
         if t_short in _NO_WORDS:
@@ -233,11 +424,64 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int) -> dict:
                 "message": "Хорошо. Назовите другую запчасть — вид или артикул.",
                 "source": "1c",
             }
+        kind = _classify_utterance(text)
+        if kind in ("meta", "chatter") or st.get("fails", 0) >= 2:
+            st["fails"] = 0
+            intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
+            ans = build_answer(text, intent, None)
+            return {"found": False, "message": ans, "source": "llm"}
         p = st["part"] or {}
-        res = call_part_api(p.get("article") or p.get("name") or text, st["vehicle"], qty)
-        if res.get("found"):
-            _dialog_reset(st)
-        return res
+        use_qty = st.get("qty") or 1
+        try:
+            stocks = onec.stock_for_item(p.get("article") or p.get("name") or text)
+        except Exception as e:
+            return {
+                "found": False,
+                "message": f"Не удалось проверить остатки: {e}",
+                "source": "1c",
+            }
+        if stocks["E"] >= use_qty:
+            source = "E"
+        elif stocks["C"] >= use_qty:
+            source = "C"
+        elif stocks["O"] >= use_qty:
+            source = "O"
+        else:
+            source = "S"
+        st["items"].append({"part": p, "qty": use_qty, "source": source})
+        st["qty"] = 1
+        st["stage"] = "await_part"
+        return {
+            "found": True,
+            "message": (
+                f"Добавил в заказ: {p['name']} (арт. {p.get('article', '')}) — "
+                f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. Ещё что-то добавить? "
+                "Или скажите «оформляй»."
+            ),
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    if stage == "await_order_confirm":
+        if t_short in _NO_WORDS:
+            st["stage"] = "await_part"
+            return {
+                "found": False,
+                "message": "Хорошо. Можно назвать ещё запчасть или скажите «оформляй».",
+                "source": "1c",
+            }
+        try:
+            res = onec.create_repair_order(st["items"], st["vehicle"])
+        except Exception as e:
+            return {
+                "found": False,
+                "message": f"Не удалось создать документы: {e}",
+                "source": "1c",
+            }
+        st["docs"] = res["docs"]
+        table = build_cart_table(st, done=True)
+        _dialog_reset(st)
+        st["docs"] = res["docs"]  # ссылки на документы остаются видимыми после сброса
+        return {"found": True, "message": res["message"], "table": table, "source": "1c"}
     return {"found": False, "message": "Неизвестный шаг диалога.", "source": "1c"}
 
 
@@ -291,10 +535,14 @@ def extract_json(text: str) -> dict | None:
         return None
 
 
-def lm_intent(text: str, history: deque | None = None) -> tuple[dict | None, str]:
+def lm_intent(
+    text: str, history: deque | None = None, extra_system: str | None = None
+) -> tuple[dict | None, str]:
     model = resolve_model()
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if extra_system:
+        messages.append({"role": "system", "content": extra_system})
     if history:
         messages += list(history)
     messages.append({"role": "user", "content": text})
@@ -401,6 +649,82 @@ def _norm_quantity(q) -> int:
     return n if n > 0 else 1
 
 
+def build_stock_table(stock: dict | None, action: str | None) -> dict | None:
+    """Таблица для веб-чата из результата остатков:
+    одна позиция — строки-склады; несколько — строки-товары."""
+    if not stock:
+        return None
+    items = stock.get("items") or []
+    if action in ("get_stock", "list_stock") and items:
+        if len(items) == 1:
+            it = items[0]
+            art = f" (арт. {it['article']})" if it.get("article") else ""
+            rows = [[w["name"], onec._format_qty(w["quantity"])] for w in it.get("warehouses", [])]
+            rows.append(["ИТОГО", onec._format_qty(it["quantity"])])
+            return {
+                "title": f"{it['name']}{art}",
+                "headers": ["Склад", "Количество"],
+                "rows": rows,
+            }
+        return {
+            "title": "Товары с остатком",
+            "headers": ["Товар", "Артикул", "Количество"],
+            "rows": [
+                [i["name"], i.get("article", ""), onec._format_qty(i["quantity"])] for i in items
+            ],
+        }
+    return None
+
+
+def build_parts_table(parts: list, vehicle: str | None) -> dict | None:
+    if not parts:
+        return None
+    title = f"Варианты для техники {vehicle}" if vehicle else "Варианты запчастей"
+    return {
+        "title": title,
+        "headers": ["Запчасть", "Артикул"],
+        "rows": [[p["name"], p.get("article", "")] for p in parts],
+    }
+
+
+def build_cart_table(st: dict, done: bool = False) -> dict | None:
+    """Таблица корзины: техника в заголовке, позиции со складами-источниками."""
+    items = st.get("items") or []
+    if not items:
+        return None
+    vehicle = st.get("vehicle") or ""
+    title = "Заказ для техники: " + vehicle
+    if done and st.get("docs"):
+        title += " — создан ремонт № " + str(st["docs"].get("repair", ""))
+    rows = [
+        [
+            i + 1,
+            it["part"]["name"],
+            it["part"].get("article", ""),
+            it["qty"],
+            onec._SOURCE_NAMES.get(it["source"], it["source"]),
+        ]
+        for i, it in enumerate(items)
+    ]
+    table: dict = {
+        "title": title,
+        "headers": ["№", "Запчасть", "Артикул", "Кол-во", "Источник"],
+        "rows": rows,
+    }
+    docs = st.get("docs") or {}
+    labels = {
+        "repair_link": "Заказ на ремонт",
+        "cmove_link": "Перемещение (текущее ОП)",
+        "zorder_link": "Заказ на перемещение",
+        "zmove_link": "Перемещение (другое ОП)",
+        "order_link": "Заказ поставщику",
+    }
+    links = [{"label": label, "url": docs[key]} for key, label in labels.items() if docs.get(key)]
+    if links:
+        table["links"] = links
+    return table
+
+
 def call_part_api(item: str, vehicle: str, quantity: int) -> dict:
     """Кейс «запчасть для техники»: подбор техники, остатки по складам
     (инженер → текущее ОП → другое ОП) и создание нужных документов
@@ -444,6 +768,25 @@ def call_lookup_parts(item: str, vehicle: str | None) -> dict:
     except Exception as e:
         print(f"[gateway] 1C find_parts failed: {e}", flush=True)
         return _lookup_error("запчасти", e)
+
+
+def _cart_view(st: dict) -> dict:
+    """JSON-вид корзины для X-Cart / панели UI."""
+    return {
+        "stage": st.get("stage"),
+        "vehicle": st.get("vehicle"),
+        "items": [
+            {
+                "name": it["part"]["name"],
+                "article": it["part"].get("article", ""),
+                "qty": it["qty"],
+                "source": it["source"],
+                "source_name": onec._SOURCE_NAMES.get(it["source"], it["source"]),
+            }
+            for it in st.get("items") or []
+        ],
+        "docs": st.get("docs"),
+    }
 
 
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
@@ -515,17 +858,19 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
             {"lm_ms": 0.0, "stock_ms": None, "tts_ms": metrics.ms() - t_tts},
         )
 
-    # 1) активная лестница: ход обрабатывает автомат состояний (без LLM)
+    # 1) активная лестница: ход обрабатывает автомат состояний (без LLM),
+    #    кроме мета-вопросов/болтовни/2 подряд неудач — там LLM с состоянием
     if st is not None and st["stage"] in (
         "await_vehicle",
         "await_vehicle_confirm",
         "await_part",
         "await_part_confirm",
+        "await_order_confirm",
     ):
         t_stock = metrics.ms()
-        stock = _dialog_turn(st, text, t_short, st.get("qty") or 1)
+        stock = _dialog_turn(st, text, t_short, st.get("qty") or 1, history)
         stock_ms = metrics.ms() - t_stock
-        answer = stock.get("message") or "Уточните."
+        answer = lm_phrase(stock.get("message") or "Уточните.", _render_state(st))
         chat_append(history, text, answer)
         intent = {"action": f"dialog:{st['stage']}"}
         t_tts = metrics.ms()
@@ -535,6 +880,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
             "X-Question": urllib.parse.quote(text),
             "X-Intent": urllib.parse.quote(json.dumps(intent, ensure_ascii=False)),
             "X-Answer": urllib.parse.quote(answer),
+            "X-Table": urllib.parse.quote(json.dumps(stock.get("table") or {}, ensure_ascii=False)),
+            "X-Cart": urllib.parse.quote(json.dumps(_cart_view(st), ensure_ascii=False)),
         }
         return (
             tts_r.content,
@@ -561,8 +908,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     item = (intent or {}).get("item")
     warehouse = (intent or {}).get("warehouse")
     action = (intent or {}).get("action")
-    if action == "request_part" and item:
-        # старт лестницы: подтверждаем технику и запчасть из базы, не заказываем сразу
+    if action == "request_part" and (item or (intent or {}).get("vehicle")):
+        # старт лестницы: строгое подтверждение техники по справочнику 1С
         t_stock = metrics.ms()
         st_item = item
         st_vehicle = str((intent or {}).get("vehicle") or "") or None
@@ -627,12 +974,16 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         raise HTTPException(status_code=502, detail=f"TTS failed: {e}") from e
     tts_ms = metrics.ms() - t_tts
 
+    table = build_stock_table(stock, action) or (stock or {}).get("table")
     headers = {
         "X-Question": urllib.parse.quote(text),
         "X-Intent": urllib.parse.quote(json.dumps(intent or {}, ensure_ascii=False)),
         "X-Answer": urllib.parse.quote(answer),
         "X-LM-Raw": urllib.parse.quote((raw or "")[:500]),
+        "X-Table": urllib.parse.quote(json.dumps(table or {}, ensure_ascii=False)),
     }
+    if chat_id and st is not None:
+        headers["X-Cart"] = urllib.parse.quote(json.dumps(_cart_view(st), ensure_ascii=False))
     extra = {
         "lm_ms": lm_ms,
         "stock_ms": stock_ms,
@@ -765,6 +1116,51 @@ def _err(t0: float, kind: str, msg: str, **extra) -> None:
 @app.get("/metrics")
 def get_metrics():
     return metrics.snapshot()
+
+
+class CartItemRequest(BaseModel):
+    chat_id: str
+    index: int = 0
+    qty: int = 1
+
+
+def _cart_or_404(chat_id: str) -> dict:
+    st = _DIALOG_STATES.get(chat_id)
+    if st is None:
+        raise HTTPException(status_code=404, detail="chat not found")
+    return st
+
+
+@app.post("/cart/update")
+def cart_update(req: CartItemRequest):
+    st = _cart_or_404(req.chat_id)
+    if req.index < 0 or req.index >= len(st["items"]):
+        raise HTTPException(status_code=404, detail="cart item not found")
+    st["items"][req.index]["qty"] = max(1, int(req.qty))
+    return _cart_view(st)
+
+
+@app.post("/cart/delete")
+def cart_delete(req: CartItemRequest):
+    st = _cart_or_404(req.chat_id)
+    if req.index < 0 or req.index >= len(st["items"]):
+        raise HTTPException(status_code=404, detail="cart item not found")
+    del st["items"][req.index]
+    return _cart_view(st)
+
+
+@app.post("/cart/clear")
+def cart_clear(req: CartItemRequest):
+    st = _cart_or_404(req.chat_id)
+    _dialog_reset(st)
+    return _cart_view(st)
+
+
+@app.get("/transcript")
+def transcript(chat_id: str):
+    h = _CHATS.get(chat_id) or []
+    lines = [f"П: {m['content']}" if m["role"] == "user" else f"А: {m['content']}" for m in h]
+    return {"chat_id": chat_id, "lines": lines}
 
 
 @app.get("/monitor", response_class=HTMLResponse)

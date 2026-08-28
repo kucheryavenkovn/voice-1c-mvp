@@ -55,18 +55,55 @@
   #send:hover { filter:brightness(1.1); }
   .hint { font-size:12px; color:var(--muted); text-align:center; padding:6px 20px 10px; }
   audio { display:none; }
+  /* --- таблицы в чате --- */
+  .tbl { margin-top:8px; overflow-x:auto; }
+  .tbl-title { font-size:11px; color:var(--muted); margin-bottom:4px; }
+  .tbl table { border-collapse:collapse; font-size:12px; width:100%; }
+  .tbl th, .tbl td { border:1px solid #2a2f3c; padding:3px 8px; text-align:left; }
+  .tbl th { background:#0f1115; color:var(--muted); font-weight:600; }
+  .tbl td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  /* --- панель корзины слева --- */
+  #cartPanel { width:300px; flex:0 0 300px; background:var(--panel); border-right:1px solid #232733;
+               padding:12px; overflow-y:auto; display:none; flex-direction:column; gap:8px; }
+  #cartPanel h3 { margin:0 0 4px; font-size:13px; color:var(--txt); }
+  #cartVehicle { font-size:11px; color:var(--accent); margin-bottom:6px; word-break:break-word; }
+  #cartPanel table { border-collapse:collapse; font-size:11px; width:100%; }
+  #cartPanel th, #cartPanel td { border:1px solid #2a2f3c; padding:3px 5px; text-align:left; }
+  #cartPanel th { background:#0f1115; color:var(--muted); }
+  #cartPanel td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  #cartPanel input.qty { width:44px; background:#0f1115; color:var(--txt); border:1px solid #2a2f3c;
+                         border-radius:4px; padding:2px 4px; font-size:11px; }
+  #cartPanel button { background:#0f1115; color:var(--txt); border:1px solid #2a2f3c;
+                      border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; }
+  #cartPanel button:hover { border-color:var(--accent); color:var(--accent); }
+  #cartPanel button.del { color:var(--err); }
+  #cartPanel .src { font-size:10px; color:var(--muted); }
+  #cartEmpty { font-size:11px; color:var(--muted); }
+  a.headerLink { font-size:12px; color:var(--accent); cursor:pointer; }
 </style>
 </head>
 <body>
+  <div style="display:flex; flex-direction:column; flex:1;">
   <header>
     <h1>🎙 voice-1c-mvp</h1>
     <span class="sub">голос → STT → LM Studio → 1C → TTS</span>
     <a href="/diag" style="margin-left:10px;font-size:12px;color:var(--accent)">🎤 диагностика</a>
     <a href="/monitor" style="font-size:12px;color:var(--accent)">📊 мониторинг</a>
+    <a id="copyDlg" class="headerLink">📋 копировать диалог</a>
     <span id="status" class="dot">готов</span>
   </header>
 
+  <div style="display:flex; flex:1; overflow:hidden;">
+  <div id="cartPanel">
+    <h3>🧺 Корзина заказа</h3>
+    <div id="cartVehicle"></div>
+    <div id="cartBody"></div>
+    <button id="cartClear">Очистить</button>
+    <div class="src">Позиции создадутся одним Заказом на ремонт; перемещения и заказ поставщику — по источникам.</div>
+  </div>
+
   <div id="chat"></div>
+  </div>
 
   <div class="toolbar">
     <label><input type="checkbox" id="autoMode"> Авто-диалог (VAD)</label>
@@ -142,6 +179,80 @@ function setMsgText(el, text, dim) {
   const t = el.querySelector('.t'); if (!t) return;
   t.textContent = text; t.classList.toggle('dim', !!dim);
 }
+
+function addTable(tbl) {
+  if (!tbl || !tbl.rows || !tbl.rows.length) return;
+  const wrap = document.createElement('div'); wrap.className = 'tbl';
+  if (tbl.title) { const t = document.createElement('div'); t.className = 'tbl-title'; t.textContent = tbl.title; wrap.appendChild(t); }
+  const tb = document.createElement('table');
+  if (tbl.headers) { const tr = document.createElement('tr'); tbl.headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); }); tb.appendChild(tr); }
+  tbl.rows.forEach(r => { const tr = document.createElement('tr'); r.forEach(c => { const td = document.createElement('td'); td.textContent = String(c); tr.appendChild(td); }); tb.appendChild(tr); });
+  wrap.appendChild(tb);
+  if (tbl.links && tbl.links.length) {
+    const ldiv = document.createElement('div'); ldiv.className = 'tbl-title';
+    tbl.links.forEach(l => {
+      const a = document.createElement('a'); a.href = l.url; a.textContent = '🔗 ' + l.label;
+      a.target = '_blank'; a.style = 'color:var(--accent);margin-right:10px;font-size:11px;';
+      ldiv.appendChild(a);
+    });
+    wrap.appendChild(ldiv);
+  }
+  chat.appendChild(wrap); chat.scrollTop = chat.scrollHeight;
+}
+
+function renderCart(v) {
+  if (!v || !('items' in v)) return;
+  const panel = document.getElementById('cartPanel');
+  panel.style.display = (v.items.length || (v.stage && v.stage !== 'idle')) ? 'flex' : 'none';
+  document.getElementById('cartVehicle').textContent = v.vehicle ? 'Техника: ' + v.vehicle : '';
+  const body = document.getElementById('cartBody');
+  if (!v.items.length) {
+    body.innerHTML = '<div id="cartEmpty">Пусто — назовите запчасть.</div>';
+    return;
+  }
+  let html = '<table><tr><th>№</th><th>Запчасть</th><th>Арт.</th><th>Кол-во</th><th>Источник</th><th></th></tr>';
+  v.items.forEach((it, i) => {
+    html += `<tr><td>${i + 1}</td><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.article)}</td>`
+      + `<td class="num"><input class="qty" data-i="${i}" type="number" min="1" value="${it.qty}"></td>`
+      + `<td class="src">${escapeHtml(it.source_name)}</td>`
+      + `<td><button class="del" data-i="${i}" title="удалить">✕</button></td></tr>`;
+  });
+  html += '</table>';
+  if (v.stage === 'await_order_confirm') html += '<div class="src">Подтвердите голосом: «да».</div>';
+  if (v.docs) {
+    const labels = { repair_link: 'Заказ на ремонт', cmove_link: 'Перемещение (текущее ОП)', zorder_link: 'Заказ на перемещение', zmove_link: 'Перемещение (другое ОП)', order_link: 'Заказ поставщику' };
+    for (const k of Object.keys(labels)) {
+      if (v.docs[k]) html += `<div class="src"><a href="${v.docs[k]}" target="_blank" style="color:var(--accent)">🔗 ${labels[k]}</a></div>`;
+    }
+  }
+  body.innerHTML = html;
+  body.querySelectorAll('input.qty').forEach(inp => inp.addEventListener('change', async e => {
+    const r = await fetch('/cart/update', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, index: +e.target.dataset.i, qty: +e.target.value }) });
+    renderCart(await r.json());
+  }));
+  body.querySelectorAll('button.del').forEach(b => b.addEventListener('click', async e => {
+    const r = await fetch('/cart/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, index: +e.target.dataset.i, qty: 1 }) });
+    renderCart(await r.json());
+  }));
+}
+
+document.getElementById('cartClear').addEventListener('click', async () => {
+  const r = await fetch('/cart/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, index: 0, qty: 1 }) });
+  renderCart(await r.json());
+});
+
+document.getElementById('copyDlg').addEventListener('click', async () => {
+  let text = '';
+  try {
+    const r = await fetch('/transcript?chat_id=' + encodeURIComponent(chatId));
+    const j = await r.json(); text = (j.lines || []).join('\n');
+  } catch {}
+  try { await navigator.clipboard.writeText(text); setStatus('диалог скопирован', 'var(--ok)'); }
+  catch { window.prompt('Скопируйте диалог:', text); }
+});
 
 async function ensureMic() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
@@ -375,6 +486,8 @@ async function answerFromText(text, sttH) {
     let meta = fmtTimings(sttH, askH);
     try { const j=JSON.parse(intent); if (j&&j.action) meta += '  ·  intent: '+JSON.stringify(j); } catch {}
     addMsg('bot', answer || '(пустой ответ)', meta);
+    addTable(dec(r.headers.get('X-Table')));
+    renderCart(dec(r.headers.get('X-Cart')));
     const ab = await r.arrayBuffer();
     await playAnswer(ab);
   } catch (e) {
