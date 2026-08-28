@@ -486,8 +486,9 @@ async function answerFromText(text, sttH) {
     let meta = fmtTimings(sttH, askH);
     try { const j=JSON.parse(intent); if (j&&j.action) meta += '  ·  intent: '+JSON.stringify(j); } catch {}
     addMsg('bot', answer || '(пустой ответ)', meta);
-    addTable(dec(r.headers.get('X-Table')));
-    renderCart(dec(r.headers.get('X-Cart')));
+    const parseHdr = s => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
+    addTable(parseHdr(dec(r.headers.get('X-Table'))));
+    renderCart(parseHdr(dec(r.headers.get('X-Cart'))));
     const ab = await r.arrayBuffer();
     await playAnswer(ab);
   } catch (e) {
