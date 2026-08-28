@@ -371,3 +371,28 @@ def test_ladder_vehicle_first_strict_id(gw):
     ans = unquote(r.headers["X-Answer"])
     assert "000000100" in ans
     assert app._DIALOG_STATES[cid]["stage"] == "idle"
+
+
+# --- детерминированные триггеры при сбое LLM ---
+
+
+def test_order_fallback_trigger(gw):
+    gw.lm_raw = "не JSON"  # LLM не распознал
+    r = gw.client.post("/ask-text", json={"text": "заказать запчасти", "chat_id": "fb1"})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Для какой техники" in ans
+    assert app._DIALOG_STATES["fb1"]["stage"] == "await_vehicle"
+
+
+def test_stock_fallback_trigger(gw):
+    gw.lm_raw = ""
+    r = gw.client.post("/ask-text", json={"text": "остатки?", "chat_id": "fb2"})
+    assert "По какому товару" in unquote(r.headers["X-Answer"])
+
+def test_extract_qty_strict():
+    """Количество — только с 'шт': 'дк сто'/'дк 100' не превращаются в 100 шт."""
+    assert app._extract_qty("да, добавь 5 штук в заказ") == 5
+    assert app._extract_qty("возьмём три штуки") == 3
+    assert app._extract_qty("дк сто") is None
+    assert app._extract_qty("дк 100") is None
+    assert app._extract_qty("да") is None

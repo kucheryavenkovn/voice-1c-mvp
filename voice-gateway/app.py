@@ -182,7 +182,8 @@ def _looks_stock_query(text: str) -> bool:
 
 
 def _extract_qty(text: str) -> int | None:
-    """Количество из реплики: '5 штук' / 'да, добавь 5' / 'пять' -> 5."""
+    """Количество из реплики — только явное: '5 штук' / 'пять штук'.
+    Голые цифры и числа словами ('дк 100', 'сто') количеством НЕ считаем."""
     if not text:
         return None
     t = text.lower()
@@ -190,13 +191,10 @@ def _extract_qty(text: str) -> int | None:
     if m:
         n = int(m.group(1))
         return n if n > 0 else None
-    m = re.search(r"\b(\d{1,4})\b", t)
+    words = "|".join(onec._WORD_NUMBERS)
+    m = re.search(rf"\b({words})\s*шт", t)
     if m:
-        n = int(m.group(1))
-        return n if n > 0 else None
-    for word, num in onec._WORD_NUMBERS.items():
-        if re.search(rf"\b{word}\b", t):
-            return int(num)
+        return int(onec._WORD_NUMBERS[m.group(1)])
     return None
 
 
@@ -540,7 +538,17 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         # 'оформляй' после TTS->STT приходит в разных формах — ловим по корню
         if any(
             k in t_short
-            for k in ("оформи", "оформля", "оформим", "оформить", "создава", "создай", "создать", "достаточно", "хватит")
+            for k in (
+                "оформи",
+                "оформля",
+                "оформим",
+                "оформить",
+                "создава",
+                "создай",
+                "создать",
+                "достаточно",
+                "хватит",
+            )
         ):
             if st["items"]:
                 st["stage"] = "await_order_confirm"
@@ -564,9 +572,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             )
             return {
                 "found": True,
-                "message": (
-                    f"Для техники {st['vehicle']} есть варианты: {names}. Какой нужен?"
-                ),
+                "message": (f"Для техники {st['vehicle']} есть варианты: {names}. Какой нужен?"),
                 "table": table,
                 "source": "1c",
             }
@@ -1065,6 +1071,8 @@ def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
         return (stock or {}).get("message") or f"Не удалось найти запчасть '{item}'."
     if action in ("lookup_vehicle", "lookup_parts"):
         return (stock or {}).get("message") or "Не удалось найти в базе. Уточните."
+    if action in ("order_fallback", "stock_fallback"):
+        return (stock or {}).get("message") or "Уточните запрос."
     if action == "clarify":
         q = str((intent or {}).get("question") or "").strip()
         if q:
@@ -1201,10 +1209,31 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     intent, raw = lm_intent(text, history)
     lm_ms = metrics.ms() - t_lm
 
-    stock = None
+    # 2а) LLM не распознал — детерминированные триггеры намерений по словам
+    # (защита от цикла «не понял — повторяю приветствие»)
+    fallback_stock = None
+    if st is not None and (intent is None or (intent or {}).get("action") == "unknown"):
+        t_low = text.lower()
+        if any(k in t_low for k in ("заказ", "заказать", "закажи", "запчаст")):
+            st.update({"stage": "await_vehicle", "item": None, "qty": 1})
+            intent = {"action": "order_fallback"}
+            fallback_stock = {
+                "found": False,
+                "message": "Для какой техники нужна запчасть? Назовите марку, модель или госномер.",
+            }
+        elif any(k in t_low for k in ("остат", "сколько")):
+            intent = {"action": "stock_fallback"}
+            fallback_stock = {
+                "found": False,
+                "message": "По какому товару узнать остаток? Назовите название или артикул.",
+            }
+
+    stock = fallback_stock
     item = (intent or {}).get("item")
     warehouse = _map_warehouse((intent or {}).get("warehouse"))
     action = (intent or {}).get("action")
+    if fallback_stock is not None:
+        stock_ms = 0.0
     if action == "request_part" and (item or (intent or {}).get("vehicle")):
         # старт лестницы: строгое подтверждение техники по справочнику 1С
         t_stock = metrics.ms()
