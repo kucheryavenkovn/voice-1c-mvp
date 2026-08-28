@@ -4,6 +4,7 @@ import pathlib
 import re
 import urllib.parse
 from collections import deque
+from datetime import datetime
 
 import metrics
 import onec
@@ -33,6 +34,9 @@ LM_MODEL = os.getenv("LM_MODEL", "auto")
 # reasoning-модели (vLLM + Qwen3): отключаем thinking для скорости голосового цикла
 LM_ENABLE_THINKING = os.getenv("LM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 LM_TIMEOUT = int(os.getenv("LM_TIMEOUT", "120"))
+# цена за 1M токенов (если задана) — для оценки стоимости в мониторинге
+LM_PRICE_PROMPT = float(os.getenv("LM_PRICE_PROMPT", "0") or 0)
+LM_PRICE_COMPLETION = float(os.getenv("LM_PRICE_COMPLETION", "0") or 0)
 
 SYSTEM_PROMPT = (
     "Ты — складской ассистент, интегрированный с 1С. "
@@ -174,7 +178,48 @@ def _map_warehouse(name: str | None) -> str | None:
 
 def _looks_stock_query(text: str) -> bool:
     t = (text or "").lower()
-    return "сколько" in t or "остаток" in t or "осталось" in t
+    return "сколько" in t or "остат" in t or "осталось" in t
+
+
+def _extract_qty(text: str) -> int | None:
+    """Количество из реплики: '5 штук' / 'да, добавь 5' / 'пять' -> 5."""
+    if not text:
+        return None
+    t = text.lower()
+    m = re.search(r"(\d+)\s*(?:шт|штук|штуки|штуку)", t)
+    if m:
+        n = int(m.group(1))
+        return n if n > 0 else None
+    m = re.search(r"\b(\d{1,4})\b", t)
+    if m:
+        n = int(m.group(1))
+        return n if n > 0 else None
+    for word, num in onec._WORD_NUMBERS.items():
+        if re.search(rf"\b{word}\b", t):
+            return int(num)
+    return None
+
+
+def stock_at_warehouse_view(warehouse: str) -> dict:
+    """Что есть на складе (для 'какие остатки у меня есть'): список позиций
+    с количествами. Только чтение."""
+    try:
+        res = onec.stock_at_warehouse(warehouse)
+    except Exception as e:
+        return {
+            "found": False,
+            "message": f"Не удалось получить остатки склада: {e}",
+            "source": "1c",
+        }
+    res["table"] = {
+        "title": f"Остатки на складе: {warehouse}",
+        "headers": ["Товар", "Артикул", "Количество"],
+        "rows": [
+            [i["name"], i.get("article", ""), onec._format_qty(i["quantity"])]
+            for i in res.get("items", [])
+        ],
+    }
+    return res
 
 
 _FILLERS = {
@@ -206,8 +251,20 @@ def chat_history(chat_id: str | None) -> deque | None:
 
 def chat_append(history: deque | None, user_text: str, answer: str) -> None:
     if history is not None:
-        history.append({"role": "user", "content": user_text})
-        history.append({"role": "assistant", "content": answer})
+        history.append(
+            {
+                "role": "user",
+                "content": user_text,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        history.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
 
 
 def _dialog_state(chat_id: str | None) -> dict | None:
@@ -267,6 +324,28 @@ _ORDER_WORDS = {
     "создать",
     "оформи заказ",
     "хватит",
+}
+_ORDER_DISCARD_WORDS = {
+    "не сохраняем",
+    "не сохранять",
+    "не сохраняй",
+    "сбрось",
+    "сбросить",
+    "удали",
+    "удалить",
+    "очисти",
+    "очистить",
+    "заново",
+}
+_ORDER_CONTINUE_WORDS = {
+    "продолжаем",
+    "продолжить",
+    "продолжай",
+    "работаем",
+    "да",
+    "давай",
+    "ок",
+    "хорошо",
 }
 _META_HINTS = (
     "каки",
@@ -421,6 +500,9 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             st["stage"] = "await_part"
         return res
     if stage == "await_part":
+        q_up = _extract_qty(text)
+        if q_up:
+            st["qty"] = q_up
         if t_short in _ORDER_WORDS:
             if st["items"]:
                 st["stage"] = "await_order_confirm"
@@ -467,7 +549,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             ans = build_answer(text, intent, None)
             return {"found": False, "message": ans, "source": "llm"}
         p = st["part"] or {}
-        use_qty = st.get("qty") or 1
+        use_qty = _extract_qty(text) or st.get("qty") or 1
         try:
             stocks = onec.stock_for_item(p.get("article") or p.get("name") or text)
         except Exception as e:
@@ -499,10 +581,10 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         }
     if stage == "await_order_confirm":
         if t_short in _NO_WORDS:
-            st["stage"] = "await_part"
+            st["stage"] = "await_order_discard"
             return {
                 "found": False,
-                "message": "Хорошо. Можно назвать ещё запчасть или скажите «оформляй».",
+                "message": ("Хорошо. Продолжаем работать с этим заказом или не сохраняем его?"),
                 "source": "1c",
             }
         try:
@@ -518,6 +600,30 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         _dialog_reset(st)
         st["docs"] = res["docs"]  # ссылки на документы остаются видимыми после сброса
         return {"found": True, "message": res["message"], "table": table, "source": "1c"}
+    if stage == "await_order_discard":
+        if t_short in _ORDER_CONTINUE_WORDS:
+            st["stage"] = "await_part"
+            return {
+                "found": False,
+                "message": "Хорошо, продолжаем. Можно назвать ещё запчасть или скажите «оформляй».",
+                "source": "1c",
+            }
+        if t_short in _ORDER_DISCARD_WORDS or t_short in _NO_WORDS:
+            _dialog_reset(st)
+            return {
+                "found": False,
+                "message": (
+                    "Заказ не сохранён, корзина очищена. Я ваш складской ассистент. "
+                    "Что вам сейчас нужно — заказать запчасть для техники или узнать "
+                    "остаток товара на складе?"
+                ),
+                "source": "llm",
+            }
+        return {
+            "found": False,
+            "message": "Уточните: продолжаем работать с этим заказом или не сохраняем?",
+            "source": "1c",
+        }
     return {"found": False, "message": "Неизвестный шаг диалога.", "source": "1c"}
 
 
@@ -583,6 +689,8 @@ def lm_intent(
         messages += list(history)
     messages.append({"role": "user", "content": text})
     content = ""
+    body: dict = {}
+    t0 = metrics.ms()
     for _attempt in (1, 2):  # один повтор: LLM иногда отвечает без JSON
         payload = {
             "model": model,
@@ -598,11 +706,19 @@ def lm_intent(
                 f"{LM_BASE_URL}/chat/completions", json=payload, headers=headers, timeout=LM_TIMEOUT
             )
             r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
+            body = r.json()
+            content = body["choices"][0]["message"]["content"]
         except Exception as e:
             return None, f"<LM error: {e}>"
         if extract_json(content) is not None:
             break
+    lm_ms = metrics.ms() - t0
+    usage = body.get("usage") or {}
+    pt = int(usage.get("prompt_tokens") or 0)
+    ct = int(usage.get("completion_tokens") or 0)
+    cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+    cost = (pt / 1e6) * LM_PRICE_PROMPT + (ct / 1e6) * LM_PRICE_COMPLETION
+    metrics.record_lm(model, pt, ct, cached, lm_ms, cost)
     return extract_json(content), content
 
 
@@ -840,6 +956,14 @@ def _cart_view(st: dict) -> dict:
     }
 
 
+def call_stock(item: str | None, warehouse: str | None, action: str | None = None) -> dict:
+    """Единая точка остатков: список всего склада (list_stock без товара)
+    или остаток по товару."""
+    if action == "list_stock" and not item and warehouse:
+        return stock_at_warehouse_view(warehouse)
+    return call_stock_api(item, warehouse)
+
+
 def build_answer(text: str, intent: dict | None, stock: dict | None) -> str:
     action = (intent or {}).get("action")
     item = (intent or {}).get("item")
@@ -918,6 +1042,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         "await_part",
         "await_part_confirm",
         "await_order_confirm",
+        "await_order_discard",
     ):
         if _looks_stock_query(text):
             intent, raw = lm_intent(text, history, extra_system=_render_state(st))
@@ -926,7 +1051,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
                 wh_s = _map_warehouse((intent or {}).get("warehouse"))
                 t_stock = metrics.ms()
                 try:
-                    stock = call_stock_api(item_s, wh_s)
+                    stock = call_stock(item_s, wh_s, (intent or {}).get("action"))
                 except Exception as e:
                     stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
                 stock_ms = metrics.ms() - t_stock
@@ -1043,10 +1168,10 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         stock_ms = metrics.ms() - t_stock
         if st is not None:
             _dialog_reset(st)
-    elif action in ("get_stock", "list_stock") and item:
+    elif action in ("get_stock", "list_stock") and (item or (action == "list_stock" and warehouse)):
         t_stock = metrics.ms()
         try:
-            stock = call_stock_api(item, warehouse)
+            stock = call_stock(item, warehouse, action)
         except Exception as e:
             stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
         stock_ms = metrics.ms() - t_stock
@@ -1248,10 +1373,24 @@ def cart_clear(req: CartItemRequest):
     return _cart_view(st)
 
 
+@app.get("/cart")
+def cart_get(chat_id: str):
+    """Состояние корзины для восстановления панели после обновления страницы."""
+    st = _DIALOG_STATES.get(chat_id)
+    if st is None:
+        return {"stage": "idle", "vehicle": None, "items": [], "docs": None}
+    return _cart_view(st)
+
+
 @app.get("/transcript")
 def transcript(chat_id: str):
     h = _CHATS.get(chat_id) or []
-    lines = [f"П: {m['content']}" if m["role"] == "user" else f"А: {m['content']}" for m in h]
+    lines = [
+        f"[{m.get('ts', '')}] П: {m['content']}"
+        if m["role"] == "user"
+        else f"[{m.get('ts', '')}] А: {m['content']}"
+        for m in h
+    ]
     return {"chat_id": chat_id, "lines": lines}
 
 

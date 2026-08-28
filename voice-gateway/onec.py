@@ -860,6 +860,50 @@ def _build_cart_code(items: str, vehicle_name: str) -> str:
     return "\n".join(steps)
 
 
+def stock_at_warehouse(warehouse: str) -> dict:
+    """Все позиции с остатками на складе (только чтение) —
+    для 'какие остатки у меня есть на складе'."""
+    q = (
+        "ВЫБРАТЬ Остатки.Номенклатура.Наименование КАК Товар, Остатки.Номенклатура.Артикул КАК Арт, "
+        "СУММА(Остатки.ВНаличииОстаток) КАК Ост "
+        "ИЗ РегистрНакопления.ТоварыНаСкладах.Остатки КАК Остатки "
+        "ГДЕ Остатки.Склад.Наименование = &Скл И Остатки.ВНаличииОстаток <> 0 "
+        "СГРУППИРОВАТЬ ПО Остатки.Номенклатура.Наименование, Остатки.Номенклатура.Артикул "
+        "УПОРЯДОЧИТЬ ПО Товар"
+    )
+    r = requests.post(
+        _api_url("execute_query"),
+        json={"query": q, "params": {"Скл": warehouse}, "limit": 50},
+        timeout=ONEC_TIMEOUT,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if not body.get("success"):
+        raise RuntimeError(f"1C execute_query error: {body.get('error')}")
+    _c, rows = _parse_table(body.get("data", ""))
+    items = []
+    for row in rows:
+        if not row or not row[0]:
+            continue
+        art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
+        items.append({"name": str(row[0]).strip(), "article": art, "quantity": row[2] if len(row) > 2 else None})
+    if not items:
+        return {
+            "found": False,
+            "items": [],
+            "message": f"На складе '{warehouse}' остатков нет.",
+            "source": "1c",
+        }
+    lst = "; ".join(f"{i['name']} — {_format_qty(i['quantity'])} шт" for i in items[:6])
+    more = f"; и ещё {len(items) - 6}" if len(items) > 6 else ""
+    return {
+        "found": True,
+        "items": items,
+        "message": f"На складе '{warehouse}' есть: {lst}{more}.",
+        "source": "1c",
+    }
+
+
 def ping() -> bool:
     try:
         r = requests.post(

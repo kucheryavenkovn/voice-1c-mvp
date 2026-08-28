@@ -15,6 +15,15 @@ _STAGES = ("stt", "lm", "stock", "tts", "total")
 _samples = {k: deque(maxlen=200) for k in _STAGES}
 _counts = {"turns": 0, "errors": 0}
 _recent = deque(maxlen=50)
+_lm = {
+    "model": None,
+    "calls": 0,
+    "prompt": 0,
+    "completion": 0,
+    "cached": 0,
+    "cost": 0.0,
+    "tps": deque(maxlen=200),
+}
 
 
 def ms() -> float:
@@ -42,6 +51,26 @@ def record(trace: dict) -> None:
         _recent.appendleft(dict(trace))
 
 
+def record_lm(
+    model: str | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+    lm_ms: float,
+    cost: float = 0.0,
+) -> None:
+    """Накопить LM-статистику одного вызова: токены, кэш, скорость, цена."""
+    with _lock:
+        _lm["model"] = model or _lm["model"]
+        _lm["calls"] += 1
+        _lm["prompt"] += int(prompt_tokens or 0)
+        _lm["completion"] += int(completion_tokens or 0)
+        _lm["cached"] += int(cached_tokens or 0)
+        _lm["cost"] += float(cost or 0.0)
+        if lm_ms and completion_tokens:
+            _lm["tps"].append(round(completion_tokens / (lm_ms / 1000.0), 1))
+
+
 def snapshot() -> dict:
     with _lock:
         out = {
@@ -59,6 +88,17 @@ def snapshot() -> dict:
                 "p95": _pct(d, 0.95),
                 "max": round(max(d), 1) if d else None,
             }
+        tps = sorted(_lm["tps"])
+        out["lm_tokens"] = {
+            "model": _lm["model"],
+            "calls": _lm["calls"],
+            "prompt_tokens": _lm["prompt"],
+            "completion_tokens": _lm["completion"],
+            "cached_tokens": _lm["cached"],
+            "cost": round(_lm["cost"], 4) if _lm["cost"] else None,
+            "tps_avg": round(statistics.fmean(tps), 1) if tps else None,
+            "tps_max": max(tps) if tps else None,
+        }
         out["recent"] = list(_recent)
         return out
 

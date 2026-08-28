@@ -55,6 +55,20 @@
   </div>
 
   <div class="panel">
+    <div style="margin-bottom:8px;color:var(--muted)">LLM: модель, токены, кэш, скорость, стоимость</div>
+    <div class="top" style="margin-bottom:8px">
+      <div class="stat"><div class="k">модель</div><div class="v" id="lmModel" style="font-size:14px">—</div></div>
+      <div class="stat"><div class="k">вызовов</div><div class="v" id="lmCalls">—</div></div>
+      <div class="stat"><div class="k">токенов вход</div><div class="v" id="lmIn">—</div></div>
+      <div class="stat"><div class="k">токенов выход</div><div class="v" id="lmOut">—</div></div>
+      <div class="stat"><div class="k">из кэша</div><div class="v" id="lmCached">—</div></div>
+      <div class="stat"><div class="k">токенов/с (avg)</div><div class="v" id="lmTps">—</div></div>
+      <div class="stat"><div class="k">стоимость</div><div class="v" id="lmCost">—</div></div>
+    </div>
+    <div class="m" style="font-size:11px" id="lmNote">Цена считается, если заданы LM_PRICE_PROMPT / LM_PRICE_COMPLETION (за 1M токенов) в .env.</div>
+  </div>
+
+  <div class="panel">
     <div style="margin-bottom:8px;color:var(--muted)">Последние ходы</div>
     <table class="recent"><thead>
       <tr><th>когда</th><th>тип</th><th>этапы (мс)</th><th>запрос / товар</th><th>результат</th></tr>
@@ -74,6 +88,14 @@ async function tick(){
     document.getElementById('errors').textContent = m.errors;
     document.getElementById('errrate').textContent = (m.error_rate*100).toFixed(1)+'%';
     document.getElementById('p95').textContent = hm(m.total?.p95);
+    const lm = m.lm_tokens || {};
+    document.getElementById('lmModel').textContent = lm.model || '—';
+    document.getElementById('lmCalls').textContent = lm.calls || 0;
+    document.getElementById('lmIn').textContent = (lm.prompt_tokens || 0) + (lm.cached_tokens ? ` (кэш ${lm.cached_tokens})` : '');
+    document.getElementById('lmOut').textContent = lm.completion_tokens || 0;
+    document.getElementById('lmCached').textContent = lm.cached_tokens || 0;
+    document.getElementById('lmTps').textContent = lm.tps_avg != null ? lm.tps_avg : '—';
+    document.getElementById('lmCost').textContent = lm.cost != null ? lm.cost.toFixed(4) : '—';
     const maxp95 = Math.max(1, ...STAGES.map(([k])=>m[k]?.p95||0));
     let rows = '';
     for (const [k,label] of STAGES){

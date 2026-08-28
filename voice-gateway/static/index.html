@@ -22,6 +22,8 @@
   .msg { max-width:75%; padding:10px 14px; border-radius:14px; line-height:1.4; font-size:15px;
          white-space:pre-wrap; word-wrap:break-word; }
   .msg .meta { display:block; font-size:11px; color:var(--muted); margin-top:6px; }
+  .msg .tsline { font-size:11px; color:var(--muted); margin-top:4px; }
+  .me .tsline { color:rgba(255,255,255,.65); }
   .msg .t.dim { color:rgba(255,255,255,.55); font-style:italic; }
   .me { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
   .me .meta { color:rgba(255,255,255,.7); }
@@ -167,12 +169,15 @@ function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<
 function addMsg(who, text, meta) {
   const el = document.createElement('div');
   el.className = 'msg ' + (who === 'me' ? 'me' : (who === 'sys' ? 'sys' : 'bot'));
-  if (who === 'sys') { el.textContent = text; }
+  if (who === 'sys') { el.appendChild(document.createTextNode(text)); }
   else {
     const t = document.createElement('span'); t.className = 't'; t.textContent = text;
     el.appendChild(t);
     if (meta) { const m = document.createElement('span'); m.className = 'meta'; m.textContent = meta; el.appendChild(m); }
   }
+  const ts = document.createElement('div'); ts.className = 'tsline';
+  ts.textContent = '🕒 ' + new Date().toLocaleString('ru-RU');
+  el.appendChild(ts);
   chat.appendChild(el); chat.scrollTop = chat.scrollHeight; return el;
 }
 function setMsgText(el, text, dim) {
