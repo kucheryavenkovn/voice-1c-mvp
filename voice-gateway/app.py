@@ -535,7 +535,8 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         q_up = _extract_qty(text)
         if q_up:
             st["qty"] = q_up
-        # 'оформляй' после TTS->STT приходит в разных формах — ловим по корню
+        # оформить / сохранить заказ ('оформляй' после TTS->STT приходит
+        # в разных формах — ловим по корням, включая 'сохраняй')
         if any(
             k in t_short
             for k in (
@@ -548,6 +549,9 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
                 "создать",
                 "достаточно",
                 "хватит",
+                "сохраня",
+                "сохрани",
+                "сохраняем",
             )
         ):
             if st["items"]:
@@ -561,6 +565,23 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             return {
                 "found": False,
                 "message": "В заказе пока нет позиций. Назовите запчасть.",
+                "source": "1c",
+            }
+        # «нет» = позиции больше не добавляем -> переход к сохранению
+        if _is_no(t_short):
+            if st["items"]:
+                st["stage"] = "await_order_confirm"
+                return {
+                    "found": True,
+                    "message": _cart_summary(st) + " Создаём документы?",
+                    "table": build_cart_table(st),
+                    "source": "1c",
+                }
+            return {
+                "found": False,
+                "message": (
+                    "Позиций в заказе пока нет. Назовите запчасть — название или артикул."
+                ),
                 "source": "1c",
             }
         kind = _classify_utterance(text)
@@ -659,8 +680,8 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             "found": True,
             "message": (
                 f"Добавил в заказ: {p['name']} (арт. {p.get('article', '')}) — "
-                f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. Ещё что-то добавить? "
-                "Или скажите «оформляй»."
+                f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. "
+                "Добавить ещё позицию или сохраняем заказ?"
             ),
             "table": build_cart_table(st),
             "source": "1c",
