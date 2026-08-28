@@ -150,7 +150,7 @@ def lm_intent(text: str) -> tuple[dict | None, str]:
     model = resolve_model()
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
     content = ""
-    for attempt in (1, 2):  # один повтор: LLM иногда отвечает без JSON
+    for _attempt in (1, 2):  # один повтор: LLM иногда отвечает без JSON
         payload = {
             "model": model,
             "temperature": 0.0,
