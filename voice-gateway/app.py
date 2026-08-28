@@ -239,6 +239,7 @@ _FILLERS = {
     "бы",
     "ещё",
     "еще",
+    "есть",
 }
 
 
@@ -407,6 +408,16 @@ def _classify_utterance(text: str) -> str:
     return "name"
 
 
+def _is_yes(t_short: str) -> bool:
+    words = set(t_short.split())
+    return t_short in _YES_WORDS or bool(words & _YES_WORDS)
+
+
+def _is_no(t_short: str) -> bool:
+    words = set(t_short.split())
+    return t_short in _NO_WORDS or bool(words & _NO_WORDS)
+
+
 def _render_state(st: dict) -> str:
     """Структура бизнес-данных сценария для промпта (бэкенд — источник истины)."""
     lines = ["СОСТОЯНИЕ СЦЕНАРИЯ ЗАКАЗА ЗАПЧАСТИ (ведёт бэкенд; факты не искажай):"]
@@ -495,7 +506,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             st["fails"] = st.get("fails", 0) + 1
         return res
     if stage == "await_vehicle_confirm":
-        if t_short in _NO_WORDS:
+        if _is_no(t_short):
             st["stage"] = "await_vehicle"
             return {
                 "found": False,
@@ -526,7 +537,11 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
         q_up = _extract_qty(text)
         if q_up:
             st["qty"] = q_up
-        if t_short in _ORDER_WORDS:
+        # 'оформляй' после TTS->STT приходит в разных формах — ловим по корню
+        if any(
+            k in t_short
+            for k in ("оформи", "оформля", "оформим", "оформить", "создава", "создай", "создать", "достаточно", "хватит")
+        ):
             if st["items"]:
                 st["stage"] = "await_order_confirm"
                 return {
@@ -600,7 +615,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             st["fails"] = st.get("fails", 0) + 1
         return res
     if stage == "await_part_confirm":
-        if t_short in _NO_WORDS:
+        if _is_no(t_short):
             st["stage"] = "await_part"
             return {
                 "found": False,
@@ -1193,7 +1208,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     if action == "request_part" and (item or (intent or {}).get("vehicle")):
         # старт лестницы: строгое подтверждение техники по справочнику 1С
         t_stock = metrics.ms()
-        st_item = item
+        st_item = _strip_fillers(item) or None
         st_vehicle = str((intent or {}).get("vehicle") or "") or None
         st_qty = _norm_quantity((intent or {}).get("quantity"))
         if st is None:
@@ -1356,7 +1371,10 @@ def ask_text(req: AskTextRequest):
 
 
 @app.post("/ask")
-def ask(file: UploadFile = File(...)):
+def ask(
+    file: UploadFile = File(...),
+    chat_id: str | None = None,
+):
     data = file.file.read()
     files = {
         "file": (
@@ -1380,7 +1398,7 @@ def ask(file: UploadFile = File(...)):
     if not text:
         raise HTTPException(status_code=400, detail="STT returned empty text")
     try:
-        audio, headers, extra = orchestrate(text, file.headers.get("x-chat-id"))
+        audio, headers, extra = orchestrate(text, chat_id or file.headers.get("x-chat-id"))
     except HTTPException as e:
         _err(t0, "ask", str(e.detail), stt_ms=stt_ms)
         raise
