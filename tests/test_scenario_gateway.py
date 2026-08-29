@@ -181,3 +181,44 @@ def test_scenario_debug_endpoint(gw):
     assert frame["version"] > 1
     assert "resolved" in frame["projection"]
     assert "Кировец" in frame["projection"]
+
+
+def test_stock_question_on_llm_miss_creates_no_row(gw, monkeypatch):
+    """«сколько дисков…» при промахе LLM — детерминированный остаток, без строк."""
+    cid = "sc8"
+    ladder_ready(gw, cid)
+    app._SCENARIO_RESOLVER.register(
+        "nomenclature",
+        lambda mention: {
+            "found": True,
+            "entities": [
+                {"name": "Диск колесный задний", "code": "ЗЧ-0000102", "article": "DK-300"}
+            ],
+        },
+    )
+    gw.lm_raw = "не JSON"  # LLM не распознал -> детерминированная ветка
+    monkeypatch.setattr(app, "lm_phrase", lambda canned, state: canned)
+    gw.onec_data = STOCK_DISK
+    r = gw.client.post("/ask-text", json={"text": "сколько дисков на моём складе?", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Диск колесный задний" in ans
+    frame = frame_of(cid)
+    assert len(frame.collections["items"]) == 1, "мусорные строки не создаются"
+    st = app._DIALOG_STATES[cid]
+    assert st["stage"] == "await_part"
+
+
+def test_finalize_word_inside_resolution_context(gw):
+    """«оформи заказ» при неподтверждённом кандидате — это финализация, а не поиск."""
+    cid = "sc9"
+    ladder_ready(gw, cid)
+    gw.onec_data = PART_DISK
+    gw.client.post("/ask-text", json={"text": "диск", "chat_id": cid})  # pending_resolution
+    r = gw.client.post("/ask-text", json={"text": "оформи заказ", "chat_id": cid})
+    ans = unquote(r.headers["X-Answer"])
+    assert "Создаём документы?" in ans
+    frame = frame_of(cid)
+    assert frame.pending_action is not None
+    assert frame.pending_resolution is None or frame.pending_resolution.startswith("items[")
+    # вторая строка-черновик осталась без подтверждения -> в корзине одна позиция
+    assert len([it for it in frame.collections["items"] if it.fields["nomenclature"].filled]) == 1

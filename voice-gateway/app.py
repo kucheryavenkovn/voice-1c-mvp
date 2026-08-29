@@ -216,6 +216,40 @@ def _looks_stock_query(text: str) -> bool:
     return "сколько" in t or "остат" in t or "осталось" in t
 
 
+_STOCK_STOPWORDS = {
+    "сколько",
+    "остаток",
+    "остатки",
+    "осталось",
+    "на",
+    "складе",
+    "склад",
+    "моём",
+    "моем",
+    "текущем",
+    "другом",
+    "оп",
+    "товар",
+    "есть",
+    "ещё",
+    "еще",
+    "покажи",
+    "узнать",
+    "мне",
+    "нужно",
+}
+
+
+def _strip_stock_words(text: str) -> str:
+    """«сколько дисков на моём складе» -> «дисков» (упоминание для resolver)."""
+    toks = [
+        t
+        for t in re.split(r"\s+", (text or "").strip())
+        if t and t.lower().strip(".,!?") not in _STOCK_STOPWORDS
+    ]
+    return " ".join(toks)
+
+
 def _extract_qty(text: str) -> int | None:
     """Количество из реплики — только явное: '5 штук' / 'пять штук'.
     Голые цифры и числа словами ('дк 100', 'сто') количеством НЕ считаем."""
@@ -762,7 +796,15 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
     #    показа подтверждения инвалидирует PendingAction (Case 6).
     if frame.pending_action is not None:
         if _is_yes(t_short):
-            r = manager.apply(session, Command(kind="confirm_pending"))
+            try:
+                r = manager.apply(session, Command(kind="confirm_pending"))
+            except Exception as e:
+                # legacy-паритет: ошибка 1С — понятный ответ, подтверждение остаётся
+                return {
+                    "found": False,
+                    "message": f"Не удалось создать документы: {e}",
+                    "source": "1c",
+                }
             if r.ok and r.status == "executed":
                 docs = dict(r.data.get("docs", {}))
                 docs.pop("frame_payload", None)
@@ -961,6 +1003,13 @@ def _interpret_resolution(session, frame, st, text, t_short, qty, history) -> di
     field = frame.field(res_path)
     is_vehicle = res_path == "vehicle"
     chat_id = st.get("_chat_id")
+
+    # финализация важнее выбора кандидата: «оформи заказ» в контексте
+    # подтверждения запчасти означает «сохраняй», а не «ищи номенклатуру»
+    if any(k in t_short for k in _FINALIZE_WORDS) and not (
+        _ADD_ROW_RE.search(t_short) or _DEL_ROW_RE.search(t_short)
+    ):
+        return _interpret_free(session, frame, st, text, t_short, qty, history)
 
     if _is_yes(t_short) and field.candidates:
         if is_vehicle:
@@ -1207,8 +1256,12 @@ def _interpret_free(session, frame, st, text, t_short, qty, history) -> dict:
             "source": "1c",
         }
 
-    # 2а) «да» без ожидаемого подтверждения — документов не создаёт
-    if t_short in _YES_WORDS:
+    # 2а) «да/подтверждаю» без ожидаемого подтверждения — документов не создаёт.
+    # Если после yes-слов осталось содержимое («да, диск задний») — это упоминание.
+    yes_remainder = " ".join(t for t in t_short.split() if t not in _YES_WORDS)
+    if yes_remainder and _is_yes(t_short):
+        return _resolve_part_mention(session, frame, st, yes_remainder, qty, history)
+    if _is_yes(t_short):
         return {
             "found": False,
             "message": "Сейчас нечего подтверждать. Скажите «оформляй», чтобы сохранить заказ.",
@@ -1263,6 +1316,30 @@ def _interpret_free(session, frame, st, text, t_short, qty, history) -> dict:
                     "table": build_cart_table(st),
                     "source": "1c",
                 }
+
+    # 7а) «сколько … на складе» при промахе LLM — детерминированный остаток
+    # (параллельный STOCK_QUERY, без создания мусорных строк в заказе)
+    if _looks_stock_query(text):
+        stock_item = _strip_stock_words(text)
+        wh = None
+        for alias, target in _WAREHOUSE_ALIASES:
+            if alias in text.lower():
+                wh = target
+                break
+        if stock_item or wh:
+            action = "list_stock" if not stock_item else "get_stock"
+            try:
+                res = _run_stock_scenario(chat_id, stock_item or None, wh, action)
+            except Exception as e:
+                res = {"found": False, "message": f"Не удалось получить остаток: {e}"}
+            st["fails"] = st.get("fails", 0)
+            res.setdefault("table", build_stock_table(res, action))
+            return res
+        return {
+            "found": False,
+            "message": "По какому товару узнать остаток? Назовите название или артикул.",
+            "source": "1c",
+        }
 
     # 5)schema-driven: незаполненная обязательная техника — голое существительное
     # это упоминание ТЕХНИКИ (заказ всегда от техники), а не запчасти
