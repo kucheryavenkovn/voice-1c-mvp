@@ -36,12 +36,7 @@ def fake_llm(mapping):
         utterance = utterance.strip().lower()
         for phrase in sorted(mapping, key=len, reverse=True):
             if phrase in utterance:
-                print(
-                    f"DBG FAKE: utterance={utterance!r} matched={phrase!r} "
-                    f"cmds={[c['kind'] for c in mapping[phrase]]}"
-                )
                 return json.dumps({"commands": mapping[phrase]}, ensure_ascii=False)
-        print(f"DBG FAKE: utterance={utterance!r} matched=NONE")
         return '{"commands": []}'
 
     return call
@@ -519,24 +514,7 @@ def test_mutation_after_pending_invalidates_it(env, monkeypatch):
         },
         monkeypatch,
     )
-    _orig_render = app._render_scenario_results
-
-    def _rr(session, st, results, qty, added_msg=None):
-        print("DBG RESULTS:", [(r.ok, r.status, r.message) for r in results])
-        return _orig_render(session, st, results, qty, added_msg=added_msg)
-
-    app._render_scenario_results = _rr
-    _orig_batch = app._scenario_manager().apply_batch
-    r = post(gw, "llm", "оформи заказ")
-    print("DBG ANSWER:", unquote(r.headers.get("X-Answer", "")))
-    print("DBG PENDING:", frame_of("llm").pending_action)
-    sess = app._scenario_manager().session("llm")
-    print(
-        "DBG FRAMES:",
-        [(f.id[:6], f.status, len(f.collections.get("items", []))) for f in sess.frames.values()],
-        "active:",
-        sess.active_frame_id[:6] if sess.active_frame_id else None,
-    )
+    post(gw, "llm", "оформи заказ")
     assert frame_of("llm").pending_action is not None
     app._SCENARIO_RESOLVER.register(
         "nomenclature",
