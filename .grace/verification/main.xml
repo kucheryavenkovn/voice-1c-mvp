@@ -11,7 +11,8 @@
       </TestFiles>
       <Command>pytest -q tests/test_gateway.py tests/test_extract_json.py tests/test_messages.py tests/test_nonfunctional.py tests/test_snapshots.py</Command>
       <Scenario>LLM intent распознаётся из ответа с мусором/markdown вокруг JSON.</Scenario>
-      <Scenario>Диалоговая лестница заказа сохраняет этап при вопросах об остатках и выходит к LLM на мета-вопросах.</Scenario>
+      <Scenario>Активный ScenarioFrame сохраняется при вопросах об остатках (параллельный STOCK_QUERY) и выходит к LLM на мета-вопросах.</Scenario>
+      <Scenario>Исправление данных после вопроса «Создаём документы?» инвалидирует PendingAction и не создаёт документы.</Scenario>
       <Scenario>Ошибки TTS/LLM возвращают явные ошибки, а не выдуманный успех.</Scenario>
     </V-M-VOICE-GATEWAY>
 
@@ -87,5 +88,40 @@
       <Command>pytest -q tests/test_observability.py</Command>
       <Scenario>Страница /monitor отдаётся и отображает агрегаты этапов и LM-метрики.</Scenario>
     </V-M-WEB-MONITOR>
+
+    <V-M-SCENARIO-MANAGER>
+      <TestFiles>
+        <File>tests/test_scenarios.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_scenarios.py</Command>
+      <Scenario>ScenarioFrame существует независимо от LLM и истории чата; продолжение сценария работает только по компактной проекции.</Scenario>
+      <Scenario>Строки коллекции имеют стабильные item_id; адресные правки («во второй строке три штуки», «удали первую») меняют только выбранную строку.</Scenario>
+      <Scenario>Зависимости/инвалидация: смена техники инвалидирует зависимую номенклатуру, сохраняя независимые поля; правка после подтверждения инвалидирует PendingAction.</Scenario>
+    </V-M-SCENARIO-MANAGER>
+
+    <V-M-SCENARIO-DEFINITIONS>
+      <TestFiles>
+        <File>tests/test_scenarios.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_scenarios.py</Command>
+      <Scenario>Определения repair_order/stock_query загружаются из YAML вне app.py; некорректная схема не принимается runtime молча.</Scenario>
+    </V-M-SCENARIO-DEFINITIONS>
+
+    <V-M-ENTITY-RESOLVER>
+      <TestFiles>
+        <File>tests/test_scenarios.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_scenarios.py</Command>
+      <Scenario>Ссылочное поле resolved только при точной идентичности 1С (EntityRef); ambiguous и not_found не считаются заполненными; LLM не может выдумать ref.</Scenario>
+    </V-M-ENTITY-RESOLVER>
+
+    <V-M-COMMAND-INTERPRETER>
+      <TestFiles>
+        <File>tests/test_scenario_gateway.py</File>
+      </TestFiles>
+      <Command>pytest -q tests/test_scenario_gateway.py</Command>
+      <Scenario>«Добавь строку» и адресные правки строк не интерпретируются как поиск номенклатуры.</Scenario>
+      <Scenario>Параллельный STOCK_QUERY не разрушает активный REPAIR_ORDER; correction-реплика не создаёт документы в 1С.</Scenario>
+    </V-M-COMMAND-INTERPRETER>
 </VD-MAIN>
 </GraceVerificationDocument>

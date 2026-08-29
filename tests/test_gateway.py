@@ -251,22 +251,23 @@ def test_request_part_ladder_full(gw):
 
     # 2) название техники -> нашлась -> подтверждение
     gw.onec_data = (
-        '[1]{"Наименование"}:\n  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345'
+        '[1]{"Наименование","Код"}:\n'
+        "  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345,000000008"
     )
     r = gw.client.post("/ask-text", json={"text": "кировец", "chat_id": cid})
     assert "Нашёл технику" in unquote(r.headers["X-Answer"])
 
     # 3) подтверждение -> варианты запчастей
     gw.onec_data = (
-        '[2]{"Наименование","Артикул"}:\n'
-        "  Диск колесный передний,DK-100\n"
-        "  Диск колесный задний,DK-300"
+        '[2]{"Наименование","Артикул","Код"}:\n'
+        "  Диск колесный передний,DK-100,000000101\n"
+        "  Диск колесный задний,DK-300,000000102"
     )
     r = gw.client.post("/ask-text", json={"text": "да", "chat_id": cid})
     assert "варианты" in unquote(r.headers["X-Answer"])
 
     # 4) выбор варианта -> одиночная -> подтверждение
-    gw.onec_data = '[1]{"Наименование","Артикул"}:\n  Диск колесный задний,DK-300'
+    gw.onec_data = '[1]{"Наименование","Артикул","Код"}:\n  Диск колесный задний,DK-300,000000102'
     r = gw.client.post("/ask-text", json={"text": "задний", "chat_id": cid})
     assert "Нашёл запчасть" in unquote(r.headers["X-Answer"])
 
@@ -302,7 +303,7 @@ def test_request_part_ladder_negative_then_recover(gw):
     assert "не найдена" in ans and "заказать под неё не можем" in ans
     assert app._DIALOG_STATES[cid]["stage"] == "await_vehicle"
     # назвали другую -> нашлась
-    gw.onec_data = '[1]{"Наименование"}:\n  Трактор МТЗ-82 Гос. № В777ОР04'
+    gw.onec_data = '[1]{"Наименование","Код"}:\n  Трактор МТЗ-82 Гос. № В777ОР04,000000010'
     r = gw.client.post("/ask-text", json={"text": "мтз восемьдесят два", "chat_id": cid})
     assert "Нашёл технику" in unquote(r.headers["X-Answer"])
 
@@ -333,7 +334,8 @@ def test_ladder_vehicle_first_strict_id(gw):
     # 2) 'кировец' -> request_part(item=None, vehicle) -> строгая проверка по 1С
     gw.lm_raw = json.dumps({"action": "request_part", "item": None, "vehicle": "кировец"})
     gw.onec_data = (
-        '[1]{"Наименование"}:\n  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345'
+        '[1]{"Наименование","Код"}:\n'
+        "  Трактор Кировец К-744Р Гос. № А123ВС04 VIN XTA00000000012345,000000008"
     )
     r = gw.client.post("/ask-text", json={"text": "кировец", "chat_id": cid})
     ans = unquote(r.headers["X-Answer"])
@@ -352,7 +354,7 @@ def test_ladder_vehicle_first_strict_id(gw):
     assert "не найдена" in ans and "заказать под неё не можем" in ans
 
     # 4) назвали запчасть -> одиночная -> подтверждение
-    gw.onec_data = '[1]{"Наименование","Артикул"}:\n  Диск колесный передний,DK-100'
+    gw.onec_data = '[1]{"Наименование","Артикул","Код"}:\n  Диск колесный передний,DK-100,000000101'
     r = gw.client.post("/ask-text", json={"text": "дк сто", "chat_id": cid})
     ans = unquote(r.headers["X-Answer"])
     assert "Нашёл запчасть" in ans and "DK-100" in ans and "Она?" in ans

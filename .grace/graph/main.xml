@@ -3,8 +3,8 @@
 
     <M-VOICE-GATEWAY>
       <Summary>
-        HTTP entry point and orchestration layer for voice, text, dialogue FSM,
-        LLM intent routing and response generation.
+        HTTP entry point and orchestration layer for voice, text, scenario
+        command interpretation, LLM intent routing and response generation.
       </Summary>
       <Path>voice-gateway/app.py</Path>
 
@@ -13,6 +13,8 @@
       <M-1C-ADAPTER />
       <M-MOCK-1C />
       <M-OBSERVABILITY />
+      <M-SCENARIO-MANAGER />
+      <M-COMMAND-INTERPRETER />
     </M-VOICE-GATEWAY>
 
     <M-1C-ADAPTER>
@@ -46,6 +48,43 @@
       <Path>mock-api/app.py</Path>
     </M-MOCK-1C>
 
+    <M-SCENARIO-MANAGER>
+      <Summary>
+        Persistent business-scenario state: ScenarioFrame (fields, collections
+        with stable item_id, dependency invalidation, focus, PendingAction),
+        typed-command application and execution gate.
+      </Summary>
+      <Path>voice-gateway/scenarios/manager.py</Path>
+      <M-ENTITY-RESOLVER />
+      <M-SCENARIO-DEFINITIONS />
+    </M-SCENARIO-MANAGER>
+
+    <M-SCENARIO-DEFINITIONS>
+      <Summary>
+        Declarative YAML scenario definitions (repair_order, stock_query) with
+        strict schema validation at load time.
+      </Summary>
+      <Path>voice-gateway/scenarios/definitions/</Path>
+    </M-SCENARIO-DEFINITIONS>
+
+    <M-ENTITY-RESOLVER>
+      <Summary>
+        Strict 1C entity resolution: user mention -> 1C lookup -> exact EntityRef
+        (code/ref); ambiguous and not_found never count as filled.
+      </Summary>
+      <Path>voice-gateway/scenarios/resolver.py</Path>
+      <M-1C-ADAPTER />
+    </M-ENTITY-RESOLVER>
+
+    <M-COMMAND-INTERPRETER>
+      <Summary>
+        Turns a user utterance into a closed set of typed commands against the
+        ScenarioFrame (schema/focus/pending driven; stage is never the source).
+      </Summary>
+      <Path>voice-gateway/app.py</Path>
+      <M-SCENARIO-MANAGER />
+    </M-COMMAND-INTERPRETER>
+
     <M-WEB-CHAT>
       <Summary>Browser voice/text dialogue client with VAD, cart panel and tables.</Summary>
       <Path>voice-gateway/static/index.html</Path>
@@ -77,10 +116,14 @@
 
     <DF-PART-ORDER>
       <Summary>
-        Vehicle selection -> part selection -> stock-source decision ->
-        repair/supply document creation.
+        Repair-order scenario over a persistent ScenarioFrame: arbitrary order
+        of field resolution (vehicle, part rows), dependency invalidation and
+        an explicit execution gate for 1C documents.
       </Summary>
       <M-VOICE-GATEWAY />
+      <M-COMMAND-INTERPRETER />
+      <M-SCENARIO-MANAGER />
+      <M-ENTITY-RESOLVER />
       <M-1C-ADAPTER />
     </DF-PART-ORDER>
 
@@ -94,6 +137,17 @@
       <M-1C-ADAPTER />
       <M-MOCK-1C />
     </DF-STOCK-QUERY>
+
+    <DF-SCENARIO-COMMAND>
+      <Summary>
+        Utterance -> typed command interpretation -> ScenarioManager ->
+        ScenarioFrame mutation -> EntityResolver -> 1C -> validated response.
+      </Summary>
+      <M-COMMAND-INTERPRETER />
+      <M-SCENARIO-MANAGER />
+      <M-ENTITY-RESOLVER />
+      <M-1C-ADAPTER />
+    </DF-SCENARIO-COMMAND>
 
     <DF-OBSERVABILITY>
       <Summary>

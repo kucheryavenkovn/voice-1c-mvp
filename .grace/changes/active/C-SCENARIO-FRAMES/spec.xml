@@ -1,0 +1,55 @@
+<GraceChangeSpec graceVersion="4.0" status="approved">
+  <C-SCENARIO-FRAMES>
+    <Name>C-SCENARIO-FRAMES</Name>
+    <Summary>
+      Архитектурный переход от stage-driven «лестницы» (FSM) к персистентным
+      бизнес-сценариям: ScenarioFrame на бэкенде (поля, коллекции со стабильными
+      item_id, зависимости/инвалидация, focus, PendingAction с execution gate),
+      строгий EntityRef для ссылок 1С, декларативные YAML-определения сценариев
+      и typed-команды LLM. История чата и stage перестают быть источником
+      бизнес-состояния.
+    </Summary>
+    <Goals>
+      <Goal>ScenarioFrame — единственный источник бизнес-состояния, независимый от LLM и истории чата.</Goal>
+      <Goal>Ссылочные поля 1С хранят точную идентичность (EntityRef), имя — только user_mention.</Goal>
+      <Goal>Произвольный порядок заполнения: возврат, исправление, адресация строк коллекции без stage-интерпретации.</Goal>
+      <Goal>Write-эффекты только через подтверждённый PendingAction актуальной версии frame.</Goal>
+      <Goal>Определения сценариев (REPAIR_ORDER, STOCK_QUERY) — декларативные YAML с валидацией.</Goal>
+    </Goals>
+    <Constraints>
+      <Constraint>Публичные API (/ask, /ask-text, cart, /metrics) не ломаются; допускается read-only debug-endpoint.</Constraint>
+      <Constraint>Существующая 1С-логика документов (один ЗаказНаРемонт + обеспечение) сохраняется.</Constraint>
+      <Constraint>LLM не получает права менять frame напрямую: только закрытый набор typed-команд через ScenarioManager.</Constraint>
+      <Constraint>Совместимость: legacy stage выводится из frame (compat-проекция) для UI/тестов на переходный период.</Constraint>
+    </Constraints>
+    <NonGoals>
+      <NonGoal>Внедрение Rasa/CALM или новых внешних зависимостей.</NonGoal>
+      <NonGoal>Переписывание проверенной 1С BSL-логики создания документов.</NonGoal>
+      <NonGoal>Новые бизнес-сценарии сверх STOCK_QUERY и REPAIR_ORDER.</NonGoal>
+      <NonGoal>Физическое дробление app.py/onec.py целиком (за пределами выноса сценариев).</NonGoal>
+    </NonGoals>
+    <AcceptanceCriteria>
+      <Criterion>GRACE не описывает линейный FSM как источник бизнес-состояния; ScenarioFrame зафиксирован как source of truth.</Criterion>
+      <Criterion>Определения сценариев находятся вне app.py (voice-gateway/scenarios/definitions/*.yaml) и валидируются при загрузке.</Criterion>
+      <Criterion>«добавь строку» и адресные правки строк не интерпретируются как поиск номенклатуры.</Criterion>
+      <Criterion>Ссылочные поля содержат EntityRef из 1С; ambiguous не считается заполненным.</Criterion>
+      <Criterion>Параллельный STOCK_QUERY не разрушает активный REPAIR_ORDER; полная история чата не нужна для продолжения сценария.</Criterion>
+      <Criterion>Исправление данных после вопроса «Создаём документы?» инвалидирует PendingAction и не создаёт документы.</Criterion>
+      <Criterion>grace lint, ruff, pytest (включая новые scenario-тесты) — зелёные.</Criterion>
+    </AcceptanceCriteria>
+    <VerificationIntent>
+      <Item>tests/test_scenarios.py — модели, manager, invalidation, focus, pending action, resolver.</Item>
+      <Item>tests/test_gateway.py — регресс диалоговых потоков через /ask-text.</Item>
+      <Item>grace lint --path . — целостность графа и verification.</Item>
+    </VerificationIntent>
+    <AffectedAreas>
+      <Area>.grace/</Area>
+      <Area>AGENTS.md</Area>
+      <Area>voice-gateway/scenarios/</Area>
+      <Area>voice-gateway/app.py</Area>
+      <Area>voice-gateway/onec.py</Area>
+      <Area>tests/</Area>
+      <Area>docs/ARCHITECTURE.md</Area>
+    </AffectedAreas>
+  </C-SCENARIO-FRAMES>
+</GraceChangeSpec>

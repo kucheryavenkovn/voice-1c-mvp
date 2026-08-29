@@ -45,6 +45,7 @@ import requests
 #   stock_at_warehouse - остатки по складу
 #   stock_for_item - остатки по номенклатуре (запросом)
 #   find_vehicles - идентификация техники
+#   find_nomenclature - точный lookup номенклатуры (identity для сценариев)
 #   find_parts - идентификация номенклатуры
 #   execute_code - выполнение BSL через /api/execute_code
 #   create_order - заказ товара у поставщика
@@ -1750,7 +1751,7 @@ def find_vehicles(pattern: str) -> dict:
     conds = _token_matchconds("Объекты", pattern)
     url = _api_url("execute_query")
     q = (
-        "ВЫБРАТЬ ПЕРВЫЕ 3 Объекты.Наименование КАК Наим "
+        "ВЫБРАТЬ ПЕРВЫЕ 3 Объекты.Наименование КАК Наим, Объекты.Код КАК Код "
         "ИЗ Справочник.ОбъектыЭксплуатации КАК Объекты "
         "ГДЕ НЕ Объекты.ЭтоГруппа И НЕ Объекты.ПометкаУдаления И " + conds
     )
@@ -1760,11 +1761,26 @@ def find_vehicles(pattern: str) -> dict:
     if not body.get("success"):
         raise RuntimeError(f"1C execute_query error: {body.get('error')}")
     _cols, rows = _parse_table(body.get("data", ""))
-    names = [str(row[0]).strip() for row in rows if row and row[0]]
+
+    def _entities_from_rows(rows_, names_=None):
+        """[{name, code}] — identity (Код 1С), names_ ограничивает fuzzy-выбор."""
+        out = []
+        for row in rows_:
+            if not row or not row[0]:
+                continue
+            name = str(row[0]).strip()
+            if names_ is not None and name not in names_:
+                continue
+            code = str(row[1]).strip() if len(row) > 1 and row[1] not in (None, "") else None
+            out.append({"name": name, "code": code})
+        return out
+
+    entities = _entities_from_rows(rows)
+    names = [e["name"] for e in entities]
     if not names:
         # фаззи-фоллбэк: все объекты (до 50) и ранжирование по похожести
         q_all = (
-            "ВЫБРАТЬ ПЕРВЫЕ 50 Объекты.Наименование КАК Наим "
+            "ВЫБРАТЬ ПЕРВЫЕ 50 Объекты.Наименование КАК Наим, Объекты.Код КАК Код "
             "ИЗ Справочник.ОбъектыЭксплуатации КАК Объекты ГДЕ НЕ Объекты.ЭтоГруппа "
             "И НЕ Объекты.ПометкаУдаления"
         )
@@ -1772,21 +1788,25 @@ def find_vehicles(pattern: str) -> dict:
         r_all.raise_for_status()
         b_all = r_all.json()
         _c, rows_all = _parse_table(b_all.get("data", "")) if b_all.get("success") else ([], [])
-        all_names = [str(x[0]).strip() for x in rows_all if x and x[0]]
-        picks = _fuzzy_pick(pattern, all_names)
+        all_entities = _entities_from_rows(rows_all)
+        picks = _fuzzy_pick(pattern, [e["name"] for e in all_entities])
+        entities = [e for e in all_entities if e["name"] in picks]
+        names = [e["name"] for e in entities]
         if picks:
             if len(picks) == 1:
                 return {
                     "found": True,
-                    "vehicles": picks,
-                    "message": f"Возможно, вы имели в виду технику: {picks[0]}. Это она?",
+                    "vehicles": names,
+                    "entities": entities,
+                    "message": f"Возможно, вы имели в виду технику: {names[0]}. Это она?",
                     "source": "1c",
                 }
             return {
                 "found": True,
-                "vehicles": picks,
+                "vehicles": names,
+                "entities": entities,
                 "message": "Возможно, вы имели в виду одну из техник: "
-                + "; ".join(picks)
+                + "; ".join(names)
                 + ". Уточните.",
                 "source": "1c",
             }
@@ -1806,11 +1826,18 @@ def find_vehicles(pattern: str) -> dict:
         msg = f"Техника '{pattern}' в справочнике 1С не найдена — заказать под неё не можем."
         if known:
             msg += f" Есть, например: {known}."
-        return {"found": False, "vehicles": [], "message": msg + " Уточните.", "source": "1c"}
+        return {
+            "found": False,
+            "vehicles": [],
+            "entities": [],
+            "message": msg + " Уточните.",
+            "source": "1c",
+        }
     if len(names) == 1:
         return {
             "found": True,
             "vehicles": names,
+            "entities": entities,
             "message": f"Нашёл технику: {names[0]}. Это она?",
             "source": "1c",
         }
@@ -1818,6 +1845,7 @@ def find_vehicles(pattern: str) -> dict:
     return {
         "found": True,
         "vehicles": names,
+        "entities": entities,
         "message": f"По '{pattern}' найдено несколько единиц: {lst}. Уточните — модель или госномер.",
         "source": "1c",
     }
@@ -1838,7 +1866,8 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
     conds = _token_matchconds("Номенклатура", item)
     url = _api_url("execute_query")
     q = (
-        "ВЫБРАТЬ ПЕРВЫЕ 4 Номенклатура.Наименование КАК Наим, Номенклатура.Артикул КАК Арт "
+        "ВЫБРАТЬ ПЕРВЫЕ 4 Номенклатура.Наименование КАК Наим, Номенклатура.Артикул КАК Арт, "
+        "Номенклатура.Код КАК Код "
         "ИЗ Справочник.Номенклатура КАК Номенклатура "
         "ГДЕ НЕ Номенклатура.ЭтоГруппа И НЕ Номенклатура.ПометкаУдаления И "
         'Номенклатура.ВидНоменклатуры.Наименование = "Запчасти для спецтехники" И ' + conds
@@ -1849,17 +1878,24 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
     if not body.get("success"):
         raise RuntimeError(f"1C execute_query error: {body.get('error')}")
     _cols, rows = _parse_table(body.get("data", ""))
-    parts = []
-    for row in rows:
-        if not row or not row[0]:
-            continue
-        name = str(row[0]).strip()
-        art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
-        parts.append({"name": name, "article": art})
+
+    def _part_rows(rows_):
+        out = []
+        for row in rows_:
+            if not row or not row[0]:
+                continue
+            name = str(row[0]).strip()
+            art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
+            code = str(row[2]).strip() if len(row) > 2 and row[2] not in (None, "") else None
+            out.append({"name": name, "article": art, "code": code})
+        return out
+
+    parts = _part_rows(rows)
     if not parts:
         # фаззи-фоллбэк: все позиции вида (до 50) и ранжирование по похожести
         q_all = (
-            "ВЫБРАТЬ ПЕРВЫЕ 50 Номенклатура.Наименование КАК Наим, Номенклатура.Артикул КАК Арт "
+            "ВЫБРАТЬ ПЕРВЫЕ 50 Номенклатура.Наименование КАК Наим, Номенклатура.Артикул КАК Арт, "
+            "Номенклатура.Код КАК Код "
             "ИЗ Справочник.Номенклатура КАК Номенклатура "
             "ГДЕ НЕ Номенклатура.ЭтоГруппа И НЕ Номенклатура.ПометкаУдаления И "
             'Номенклатура.ВидНоменклатуры.Наименование = "Запчасти для спецтехники"'
@@ -1868,18 +1904,19 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
         r_all.raise_for_status()
         b_all = r_all.json()
         _c, rows_all = _parse_table(b_all.get("data", "")) if b_all.get("success") else ([], [])
-        all_parts = []
-        for row in rows_all:
-            if not row or not row[0]:
-                continue
-            art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
-            all_parts.append({"name": str(row[0]).strip(), "article": art})
+        all_parts = _part_rows(rows_all)
         picks = _fuzzy_pick(item, [p["name"] for p in all_parts])
         parts = [p for p in all_parts if p["name"] in picks]
+    entities = [
+        {"name": p["name"], "code": p.get("code"), "article": p.get("article", "")}
+        for p in parts
+        if p["name"]
+    ]
     if not parts:
         return {
             "found": False,
             "parts": [],
+            "entities": [],
             "message": (
                 f"По '{item}' номенклатуры в базе нет — такую запчасть мы не обрабатываем. "
                 "Назовите артикул или другую запчасть."
@@ -1892,6 +1929,7 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
         return {
             "found": True,
             "parts": parts,
+            "entities": entities,
             "message": f"Нашёл запчасть: {p['name']}{art}. Она?",
             "source": "1c",
         }
@@ -1902,12 +1940,63 @@ def find_parts(item: str, vehicle: str | None = None) -> dict:
     return {
         "found": True,
         "parts": parts,
+        "entities": entities,
         "message": f"Есть варианты{tail}: {lst}. Какой нужен?",
         "source": "1c",
     }
 
 
 # END_BLOCK_RESOLVE_PART
+# START_CONTRACT: find_nomenclature
+#   PURPOSE: Точный lookup номенклатуры для сценариев (STOCK_QUERY): код+артикул.
+#   INPUTS: { item: str }
+#   OUTPUTS: { found, entities[{name, code, article}], message, source='1c' }
+#   LINKS: M-1C-ADAPTER, M-ENTITY-RESOLVER, DF-STOCK-QUERY
+# END_CONTRACT: find_nomenclature
+# START_BLOCK_RESOLVE_NOMENCLATURE
+def find_nomenclature(item: str) -> dict:
+    """Lookup любой номенклатуры (без ограничения видом) для разрешения
+    ссылочных полей сценариев. Возвращает identity (Код 1С), не только имя."""
+    item = _strip_service(item)
+    if not item:
+        return {"found": False, "entities": [], "message": "Пустой запрос.", "source": "1c"}
+    conds = _token_matchconds("Номенклатура", item)
+    url = _api_url("execute_query")
+    q = (
+        "ВЫБРАТЬ ПЕРВЫЕ 5 Номенклатура.Наименование КАК Наим, Номенклатура.Артикул КАК Арт, "
+        "Номенклатура.Код КАК Код "
+        "ИЗ Справочник.Номенклатура КАК Номенклатура "
+        "ГДЕ НЕ Номенклатура.ЭтоГруппа И НЕ Номенклатура.ПометкаУдаления И " + conds
+    )
+    r = requests.post(url, json={"query": q, "limit": 10}, timeout=ONEC_TIMEOUT)
+    r.raise_for_status()
+    body = r.json()
+    if not body.get("success"):
+        raise RuntimeError(f"1C execute_query error: {body.get('error')}")
+    _cols, rows = _parse_table(body.get("data", ""))
+    entities = []
+    for row in rows:
+        if not row or not row[0]:
+            continue
+        code = str(row[2]).strip() if len(row) > 2 and row[2] not in (None, "") else None
+        art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
+        entities.append({"name": str(row[0]).strip(), "code": code, "article": art})
+    if not entities:
+        return {
+            "found": False,
+            "entities": [],
+            "message": f"Товар '{item}' в номенклатуре 1С не найден.",
+            "source": "1c",
+        }
+    return {
+        "found": True,
+        "entities": entities,
+        "message": f"Нашёл товар: {entities[0]['name']}. Это он?",
+        "source": "1c",
+    }
+
+
+# END_BLOCK_RESOLVE_NOMENCLATURE
 # START_CONTRACT: request_part
 #   PURPOSE: Разовая заявка запчасти: техника+номенклатура+остатки+документы.
 #   INPUTS: { item: str, vehicle: str, quantity: int }
@@ -2019,6 +2108,7 @@ __all__ = [
     "create_order",
     "create_repair_order",
     "execute_code",
+    "find_nomenclature",
     "find_parts",
     "find_vehicles",
     "ping",

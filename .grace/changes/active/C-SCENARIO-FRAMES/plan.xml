@@ -1,0 +1,192 @@
+<GraceChangePlan graceVersion="4.0" status="approved">
+  <C-SCENARIO-FRAMES>
+    <IntentSummary>
+      Реализовать сценарную архитектуру: пакет voice-gateway/scenarios (models,
+      registry+YAML loader, manager, resolver, commands, projection, execution),
+      строгий EntityRef из 1С, typed-команды LLM, миграция STOCK_QUERY и
+      REPAIR_ORDER, compat-проекция legacy stage, регресс-тесты и обновление
+      графа/verification.
+    </IntentSummary>
+    <BaselineAssertions>
+      <MustExist>
+        <Value>voice-gateway/app.py</Value>
+        <Value>voice-gateway/onec.py</Value>
+        <Value>tests/test_gateway.py</Value>
+        <Value>tests/test_onec.py</Value>
+        <Value>M-VOICE-GATEWAY</Value>
+        <Value>M-1C-ADAPTER</Value>
+      </MustExist>
+      <MustContain>
+        <File>voice-gateway/app.py</File>
+        <Text>START_BLOCK_DIALOG_FSM</Text>
+      </MustContain>
+      <MustPassCommand>
+        <Command>grace lint --path .</Command>
+        <Command>ruff check .</Command>
+      </MustPassCommand>
+    </BaselineAssertions>
+    <TargetAssertions>
+      <MustExist>
+        <Value>voice-gateway/scenarios/models.py</Value>
+        <Value>voice-gateway/scenarios/registry.py</Value>
+        <Value>voice-gateway/scenarios/manager.py</Value>
+        <Value>voice-gateway/scenarios/resolver.py</Value>
+        <Value>voice-gateway/scenarios/commands.py</Value>
+        <Value>voice-gateway/scenarios/projection.py</Value>
+        <Value>voice-gateway/scenarios/execution.py</Value>
+        <Value>voice-gateway/scenarios/definitions/repair_order.yaml</Value>
+        <Value>voice-gateway/scenarios/definitions/stock_query.yaml</Value>
+        <Value>tests/test_scenarios.py</Value>
+        <Value>M-SCENARIO-MANAGER</Value>
+        <Value>M-SCENARIO-DEFINITIONS</Value>
+        <Value>M-ENTITY-RESOLVER</Value>
+        <Value>M-COMMAND-INTERPRETER</Value>
+        <Value>V-M-SCENARIO-MANAGER</Value>
+        <Value>V-M-ENTITY-RESOLVER</Value>
+      </MustExist>
+      <MustVerify>
+        <Module>M-SCENARIO-MANAGER</Module>
+        <Module>M-SCENARIO-DEFINITIONS</Module>
+        <Module>M-ENTITY-RESOLVER</Module>
+        <Module>M-COMMAND-INTERPRETER</Module>
+        <Module>M-VOICE-GATEWAY</Module>
+        <Module>M-1C-ADAPTER</Module>
+      </MustVerify>
+      <MustContain>
+        <File>voice-gateway/scenarios/models.py</File>
+        <Text>class ScenarioFrame</Text>
+      </MustContain>
+      <MustContain>
+        <File>.grace/context/principles.xml</File>
+        <Text>ScenarioFrame — источник бизнес-состояния</Text>
+      </MustContain>
+      <MustPassCommand>
+        <Command>grace lint --path .</Command>
+        <Command>ruff check .</Command>
+        <Command>pytest -q tests/test_scenarios.py</Command>
+        <Command>pytest -q --ignore=tests/test_ui.py</Command>
+      </MustPassCommand>
+    </TargetAssertions>
+    <DurableScope>
+      <GD-MAIN />
+      <VD-MAIN />
+      <M-VOICE-GATEWAY />
+      <M-1C-ADAPTER />
+      <M-SCENARIO-MANAGER />
+      <M-SCENARIO-DEFINITIONS />
+      <M-ENTITY-RESOLVER />
+      <M-COMMAND-INTERPRETER />
+      <DF-VOICE-TURN />
+      <DF-PART-ORDER />
+      <DF-STOCK-QUERY />
+      <DF-SCENARIO-COMMAND />
+      <V-M-VOICE-GATEWAY />
+      <V-M-1C-ADAPTER />
+      <V-M-SCENARIO-MANAGER />
+      <V-M-SCENARIO-DEFINITIONS />
+      <V-M-ENTITY-RESOLVER />
+      <V-M-COMMAND-INTERPRETER />
+    </DurableScope>
+    <ObservedWriteScope>
+      <File>voice-gateway/scenarios/models.py</File>
+      <File>voice-gateway/scenarios/registry.py</File>
+      <File>voice-gateway/scenarios/manager.py</File>
+      <File>voice-gateway/scenarios/resolver.py</File>
+      <File>voice-gateway/scenarios/commands.py</File>
+      <File>voice-gateway/scenarios/projection.py</File>
+      <File>voice-gateway/scenarios/execution.py</File>
+      <File>voice-gateway/scenarios/__init__.py</File>
+      <File>voice-gateway/scenarios/definitions/repair_order.yaml</File>
+      <File>voice-gateway/scenarios/definitions/stock_query.yaml</File>
+      <File>voice-gateway/app.py</File>
+      <File>voice-gateway/onec.py</File>
+      <File>tests/test_scenarios.py</File>
+      <File>tests/test_gateway.py</File>
+      <File>AGENTS.md</File>
+      <File>docs/ARCHITECTURE.md</File>
+      <File>.grace/graph/main.xml</File>
+      <File>.grace/graph/index.xml</File>
+      <File>.grace/verification/main.xml</File>
+      <File>.grace/context/principles.xml</File>
+      <File>.grace/context/requirements.xml</File>
+    </ObservedWriteScope>
+    <ImplementationPlan>
+      <T-001>
+        <Title>Модели ScenarioFrame/ScenarioField/EntityRef/PendingAction/ScenarioSession</Title>
+        <DependsOn />
+        <AcceptanceCriteria>
+          <Criterion>Статусы полей missing/resolving/ambiguous/resolved/not_found/invalid; коллекции со стабильными item_id; focus-структура.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_scenarios.py</Command>
+        </Verification>
+      </T-001>
+      <T-002>
+        <Title>Декларативные определения сценариев + loader с валидацией</Title>
+        <DependsOn>T-001</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>repair_order.yaml и stock_query.yaml вне app.py; некорректная схема не принимается runtime молча.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_scenarios.py</Command>
+        </Verification>
+      </T-002>
+      <T-003>
+        <Title>ScenarioManager: команды, focus, зависимости/инвалидация, PendingAction</Title>
+        <DependsOn>T-002</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Применение typed-команд централизовано; изменение влияющего поля инвалидирует зависимости и pending-подтверждение.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_scenarios.py</Command>
+        </Verification>
+      </T-003>
+      <T-004>
+        <Title>EntityResolver: строгий EntityRef из 1С (не имя)</Title>
+        <DependsOn>T-001</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Lookup возвращает код/ссылку 1С; ambiguous не заполняет value; not_found не создаёт EntityRef.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_scenarios.py tests/test_onec.py</Command>
+        </Verification>
+      </T-004>
+      <T-005>
+        <Title>Typed-команды LLM + компактная проекция frame</Title>
+        <DependsOn>T-003</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Закрытый vocabulary команд; projection без полной истории чата; «добавь строку» не ищется как номенклатура.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_gateway.py</Command>
+        </Verification>
+      </T-005>
+      <T-006>
+        <Title>Миграция STOCK_QUERY и REPAIR_ORDER; compat stage-проекция</Title>
+        <DependsOn>T-005</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Существующие диалоговые регрессы проходят; stage выводится из frame, но не управляет интерпретацией.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q --ignore=tests/test_ui.py</Command>
+        </Verification>
+      </T-006>
+      <T-007>
+        <Title>GRACE graph/verification/AGENTS/docs и регресс-валидация</Title>
+        <DependsOn>
+          <Task>T-004</Task>
+          <Task>T-006</Task>
+        </DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Новые модули/потоки в графе с V-M-покрытием; grace lint/ruff/pytest зелёные.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+          <Command>ruff check .</Command>
+          <Command>ruff format --check .</Command>
+          <Command>pytest -q --ignore=tests/test_ui.py</Command>
+        </Verification>
+      </T-007>
+    </ImplementationPlan>
+  </C-SCENARIO-FRAMES>
+</GraceChangePlan>

@@ -13,10 +13,15 @@
         <M-WEB-CHAT />
         <M-WEB-DIAG />
         <M-WEB-MONITOR />
+        <M-SCENARIO-MANAGER />
+        <M-SCENARIO-DEFINITIONS />
+        <M-ENTITY-RESOLVER />
+        <M-COMMAND-INTERPRETER />
         <DF-VOICE-TURN />
         <DF-PART-ORDER />
         <DF-OBSERVABILITY />
         <DF-STOCK-QUERY />
+        <DF-SCENARIO-COMMAND />
       </Owns>
     </GD-MAIN>
   </GraphDocuments>

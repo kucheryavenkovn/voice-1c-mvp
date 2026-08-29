@@ -6,6 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY app.py onec.py metrics.py ./
+COPY scenarios/ ./scenarios/
 COPY static/ ./static/
 
 EXPOSE 8000

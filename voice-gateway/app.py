@@ -149,8 +149,19 @@ _cached_model = None
 _CHATS: dict[str, deque] = {}
 _CHAT_LIMIT = 12  # последние 6 пар реплик
 
-# --- детерминированная лестница подтверждений (автомат состояний диалога) ---
+# --- сценарии: ScenarioFrame на бэкенде (источник бизнес-состояния) ---------
+# legacy _DIALOG_STATES остаётся ТОЛЬКО как проекция совместимости (UI/тесты):
+# она выводится из активного ScenarioFrame и не является source of truth.
 _DIALOG_STATES: dict[str, dict] = {}
+
+from scenarios import (  # noqa: E402
+    Command,
+    EntityResolver,
+    ScenarioManager,
+    build_repair_payload,
+    load_definitions,
+)
+
 _YES_WORDS = {
     "да",
     "давай",
@@ -290,21 +301,234 @@ def chat_append(history: deque | None, user_text: str, answer: str) -> None:
         )
 
 
-def _dialog_state(chat_id: str | None) -> dict | None:
-    if not chat_id:
-        return None
-    return _DIALOG_STATES.setdefault(
+def _scenario_registry():
+    global _SCENARIO_REGISTRY
+    if _SCENARIO_REGISTRY is None:
+        _SCENARIO_REGISTRY = load_definitions(HERE / "scenarios" / "definitions")
+    return _SCENARIO_REGISTRY
+
+
+_SCENARIO_REGISTRY = None
+
+
+def _vehicle_lookup(mention: str) -> dict:
+    res = call_lookup_vehicle(mention)
+    return {
+        "found": res.get("found", False),
+        "entities": res.get("entities", []),
+        "message": res.get("message", ""),
+    }
+
+
+def _part_lookup(mention: str) -> dict:
+    res = call_lookup_parts(mention, None)
+    return {
+        "found": res.get("found", False),
+        "entities": res.get("entities", []),
+        "message": res.get("message", ""),
+    }
+
+
+def _nomenclature_lookup(mention: str) -> dict:
+    res = onec.find_nomenclature(mention)
+    return {
+        "found": res.get("found", False),
+        "entities": res.get("entities", []),
+        "message": res.get("message", ""),
+    }
+
+
+_SCENARIO_RESOLVER = EntityResolver(
+    {
+        "vehicle": _vehicle_lookup,
+        "part": _part_lookup,
+        "nomenclature": _nomenclature_lookup,
+        # склады данной конфигурации (Справочник.Склады без Код): identity = точное
+        # Наименование из настроек кейса (см. docs/1C_METADATA.md)
+        "warehouse": lambda mention: {
+            "found": True,
+            "entities": [
+                {
+                    "name": _map_warehouse(mention),
+                    "code": _map_warehouse(mention),
+                    "allow_name_identity": True,
+                }
+            ],
+        },
+    }
+)
+
+
+def _scenario_executor(action_type: str, frame, payload: dict) -> dict:
+    """Execution gate: вызывается ТОЛЬКО из confirm_pending при валидной версии."""
+    if action_type == "create_repair_documents":
+        items = [
+            {
+                "source": (
+                    row.fields.get("supply_source").value
+                    if row.fields.get("supply_source")
+                    else None
+                )
+                or "S",
+                "part": {
+                    "name": row.fields["nomenclature"].entity.name,
+                    "article": row.fields["nomenclature"].entity.metadata.get("article", ""),
+                },
+                "qty": int(row.fields["quantity"].value or 1),
+            }
+            for row in frame.collections.get("items", [])
+        ]
+        res = onec.create_repair_order(items, frame.fields["vehicle"].entity.name)
+        res["frame_payload"] = build_repair_payload(frame)
+        return res
+    raise ValueError(f"unknown action_type {action_type!r}")
+
+
+def _scenario_manager() -> ScenarioManager:
+    global _SCENARIO_MANAGER
+    if _SCENARIO_MANAGER is None:
+        _SCENARIO_MANAGER = ScenarioManager(
+            _scenario_registry(), _SCENARIO_RESOLVER, executor=_scenario_executor
+        )
+    return _SCENARIO_MANAGER
+
+
+_SCENARIO_MANAGER = None
+
+
+def _session(chat_id: str | None):
+    return _scenario_manager().session(chat_id)
+
+
+def _sync_legacy_state(chat_id: str) -> dict:
+    """Проекция совместимости: legacy-слоты выводятся из активного ScenarioFrame.
+
+    stage — НЕ источник истины и НЕ управляет интерпретацией реплик; он нужен
+    только UI/тестам на переходный период (compat-проекция).
+    """
+    st = _DIALOG_STATES.setdefault(
         chat_id,
         {
             "stage": "idle",
-            "item": None,  # запчасть, как назвал пользователь (для поиска)
-            "vehicle": None,  # подтверждённая техника (точная запись из 1С)
-            "part": None,  # {"name","article"} — подтверждённая позиция
+            "item": None,
+            "vehicle": None,
+            "part": None,
             "qty": 1,
-            "items": [],  # корзина: [{"part":{name,article},"qty":n,"source":"E|C|O|S"}]
-            "docs": None,  # созданные документы последнего заказа
-            "fails": 0,  # подряд неудач (для выхода к LLM-диалогу)
+            "items": [],
+            "docs": None,
+            "fails": 0,
+            "_chat_id": chat_id,
         },
+    )
+    session = _session(chat_id)
+    frame = session.active if session else None
+    st["items"] = []
+    st["part"] = None
+    if frame is None or frame.status in ("completed", "cancelled"):
+        st["stage"] = "idle"
+        if frame is not None:
+            st["vehicle"] = None
+        return st
+    if frame.status == "discarding":
+        st["stage"] = "await_order_discard"
+        st["vehicle"] = (
+            frame.fields.get("vehicle").entity.name
+            if frame.fields.get("vehicle") and frame.fields["vehicle"].entity
+            else None
+        )
+        return st
+    if frame.pending_action is not None:
+        st["stage"] = "await_order_confirm"
+        st["vehicle"] = frame.fields["vehicle"].entity.name
+        st["items"] = _legacy_items(frame)
+        return st
+    vehicle = frame.fields.get("vehicle")
+    if vehicle is not None and vehicle.status == "ambiguous":
+        st["stage"] = "await_vehicle_confirm"
+        st["vehicle"] = None
+        return st
+    if vehicle is None or not vehicle.filled:
+        st["stage"] = "await_vehicle"
+        st["vehicle"] = None
+        return st
+    st["vehicle"] = vehicle.entity.name if vehicle.entity else None
+    st["items"] = _legacy_items(frame)
+    focused = _focused_row(frame)
+    if focused is not None:
+        nom = focused.fields.get("nomenclature")
+        if nom is not None and nom.status == "ambiguous":
+            st["stage"] = "await_part_confirm"
+            if nom.candidates:
+                c = nom.candidates[0]
+                st["part"] = {"name": c.name, "article": c.metadata.get("article", "")}
+            return st
+        if nom is not None and nom.status in ("resolving", "missing", "not_found"):
+            st["stage"] = "await_part"
+            st["item"] = nom.user_mention
+            return st
+    st["stage"] = "await_part"
+    return st
+
+
+def _legacy_items(frame) -> list[dict]:
+    out = []
+    for row in frame.collections.get("items", []):
+        nom = row.fields.get("nomenclature")
+        qty = row.fields.get("quantity")
+        src = row.fields.get("supply_source")
+        if nom is None or not nom.filled:
+            continue  # черновик строки не виден в корзине
+        out.append(
+            {
+                "part": {
+                    "name": nom.entity.name,
+                    "article": nom.entity.metadata.get("article", ""),
+                },
+                "qty": int(qty.value or 1) if qty else 1,
+                "source": (src.value if src else None) or "S",
+            }
+        )
+    return out
+
+
+def _focused_row(frame):
+    if frame.focus is None or "[" not in frame.focus.path or frame.focus.path.startswith("items["):
+        path = frame.focus.path if frame.focus else ""
+        if path.startswith("items["):
+            item_id = path.split("[", 1)[1].split("]", 1)[0]
+            try:
+                return frame.collection_item("items", item_id)
+            except KeyError:
+                return None
+    return None
+
+
+def _dialog_state(chat_id: str | None) -> dict | None:
+    """Legacy-проекция состояния (источник истины — ScenarioFrame в сессии)."""
+    if not chat_id:
+        return None
+    return _sync_legacy_state(chat_id)
+
+
+def _dialog_reset(st: dict) -> None:
+    """Сброс сценария сессии (legacy-точка). Источник истины — frame, не dict."""
+    chat_id = st.get("_chat_id") or st.get("chat_id")
+    session = _session(chat_id) if chat_id else None
+    if session is not None:
+        for frame in list(session.frames.values()):
+            if frame.status == "active" or frame.status == "discarding":
+                _scenario_manager().cancel_scenario(session, frame)
+    st.update(
+        {
+            "stage": "idle",
+            "item": None,
+            "vehicle": None,
+            "part": None,
+            "qty": 1,
+            "items": [],
+            "docs": None,
+            "fails": 0,
+        }
     )
 
 
@@ -319,21 +543,6 @@ def _strip_fillers(text: str) -> str:
         if t and t.lower().strip(".,!?") not in _FILLERS
     ]
     return " ".join(toks)
-
-
-def _dialog_reset(st: dict) -> None:
-    st.update(
-        {
-            "stage": "idle",
-            "item": None,
-            "vehicle": None,
-            "part": None,
-            "qty": 1,
-            "items": [],
-            "docs": None,
-            "fails": 0,
-        }
-    )
 
 
 _ORDER_WORDS = {
@@ -441,7 +650,16 @@ def _is_no(t_short: str) -> bool:
 
 
 def _render_state(st: dict) -> str:
-    """Структура бизнес-данных сценария для промпта (бэкенд — источник истины)."""
+    """Состояние сценария для промпта: компактная проекция ScenarioFrame
+    (бэкенд — источник истины), для legacy-пользователей — слоты проекции."""
+    chat_id = st.get("_chat_id")
+    session = _session(chat_id) if chat_id else None
+    frame = session.active if session else None
+    if frame is not None and frame.status in ("active", "discarding"):
+        return (
+            "СОСТОЯНИЕ СЦЕНАРИЯ (ScenarioFrame ведёт бэкенд; факты не искажай):\n"
+            + _scenario_manager().compact_projection(frame)
+        )
     lines = ["СОСТОЯНИЕ СЦЕНАРИЯ ЗАКАЗА ЗАПЧАСТИ (ведёт бэкенд; факты не искажай):"]
     lines.append(f"- Техника: {st.get('vehicle') or 'не выбрана'}")
     if st.get("part"):
@@ -515,232 +733,71 @@ def _cart_summary(st: dict) -> str:
 
 
 # START_CONTRACT: _dialog_turn
-#   PURPOSE: Один детерминированный переход FSM заказа запчасти.
-#   INPUTS: { st: dict - состояние диалога, text: str - реплика,
-#             t_short: str - нормализованная реплика, qty: int, history }
+#   PURPOSE: Один семантический ход активного ScenarioFrame: интерпретация
+#            реплики -> typed-команды -> ScenarioManager -> ответ.
+#   INPUTS: { st: dict - legacy-проекция (источник истины - frame), text,
+#             t_short, qty, history }
 #   OUTPUTS: { dict - found/message/table/source текущего шага }
-#   SIDE_EFFECTS: Изменяет st (стадии, корзина); вызывает lookup/1С/LLM.
-#   LINKS: M-VOICE-GATEWAY, M-1C-ADAPTER, DF-PART-ORDER
+#   SIDE_EFFECTS: Мутирует frame только через ScenarioManager (typed-команды).
+#   LINKS: M-VOICE-GATEWAY, M-SCENARIO-MANAGER, M-COMMAND-INTERPRETER, DF-PART-ORDER
 # END_CONTRACT: _dialog_turn
 # START_BLOCK_DIALOG_FSM
 def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> dict:
-    """Один ход детерминированной лестницы (корзина позиций). Выход к LLM:
-    мета-вопросы, болтовня, 2 подряд неудачи — человечный ответ с состоянием."""
-    stage = st["stage"]
-    if stage == "await_vehicle":
-        res = call_lookup_vehicle(_strip_fillers(text))
-        if res.get("found") and len(res.get("vehicles", [])) == 1:
-            st["vehicle"] = res["vehicles"][0]
-            st["stage"] = "await_vehicle_confirm"
-            st["fails"] = 0
-        elif not res.get("found"):
-            st["fails"] = st.get("fails", 0) + 1
-        return res
-    if stage == "await_vehicle_confirm":
-        if _is_no(t_short):
-            st["stage"] = "await_vehicle"
-            return {
-                "found": False,
-                "message": "Хорошо. Назовите другую технику — марку, модель или госномер.",
-                "source": "1c",
-            }
-        if not st["item"]:
-            st["stage"] = "await_part"
-            return {
-                "found": True,
-                "message": (
-                    f"Техника подтверждена: {st['vehicle']}. Какая именно запчасть "
-                    "нужна? Назовите название или артикул."
-                ),
-                "source": "1c",
-            }
-        res = call_lookup_parts(st["item"], st["vehicle"])
-        res["table"] = _parts_table_with_stock(res.get("parts", []), st["vehicle"])
-        if res.get("found") and len(res.get("parts", [])) == 1:
-            st["part"] = res["parts"][0]
-            st["stage"] = "await_part_confirm"
-        else:
-            st["stage"] = "await_part"
-            if res.get("found") and res.get("parts"):
-                st["last_variants"] = res["parts"]
-        return res
-    if stage == "await_part":
-        q_up = _extract_qty(text)
-        if q_up:
-            st["qty"] = q_up
-        # оформить / сохранить заказ ('оформляй' после TTS->STT приходит
-        # в разных формах — ловим по корням, включая 'сохраняй')
-        if any(
-            k in t_short
-            for k in (
-                "оформи",
-                "оформля",
-                "оформим",
-                "оформить",
-                "создава",
-                "создай",
-                "создать",
-                "достаточно",
-                "хватит",
-                "сохраня",
-                "сохрани",
-                "сохраняем",
-            )
-        ):
-            if st["items"]:
-                st["stage"] = "await_order_confirm"
-                return {
-                    "found": True,
-                    "message": _cart_summary(st) + " Создаём документы?",
-                    "table": build_cart_table(st),
-                    "source": "1c",
-                }
-            return {
-                "found": False,
-                "message": "В заказе пока нет позиций. Назовите запчасть.",
-                "source": "1c",
-            }
-        # «нет» = позиции больше не добавляем -> переход к сохранению
-        if _is_no(t_short):
-            if st["items"]:
-                st["stage"] = "await_order_confirm"
-                return {
-                    "found": True,
-                    "message": _cart_summary(st) + " Создаём документы?",
-                    "table": build_cart_table(st),
-                    "source": "1c",
-                }
-            return {
-                "found": False,
-                "message": ("Позиций в заказе пока нет. Назовите запчасть — название или артикул."),
-                "source": "1c",
-            }
-        kind = _classify_utterance(text)
-        # мета-вопрос: повторить варианты, которые уже предлагались
-        if kind == "meta" and st.get("last_variants"):
-            table = build_parts_table(st["last_variants"], st["vehicle"])
-            names = "; ".join(
-                f"{p['name']} (арт. {p.get('article', '')})" for p in st["last_variants"]
-            )
-            return {
-                "found": True,
-                "message": (f"Для техники {st['vehicle']} есть варианты: {names}. Какой нужен?"),
-                "table": table,
-                "source": "1c",
-            }
-        if kind == "meta":
-            return {
-                "found": False,
-                "message": (
-                    f"Мы подбираем запчасть для техники {st['vehicle']}. Назовите "
-                    "название или артикул — покажу варианты из базы и остатки."
-                ),
-                "source": "1c",
-            }
-        if kind == "chatter" or st.get("fails", 0) >= 2:
-            st["fails"] = 0
-            intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
-            ans = build_answer(text, intent, None)
-            return {"found": False, "message": ans, "source": "llm"}
-        # слова-намерения без конкретики ('заказать', 'артикул') — не номенклатура
-        search_text = _strip_fillers(text)
-        core = " ".join(
-            t
-            for t in search_text.split()
-            if t.lower() not in _INTENT_WORDS and t.lower() not in onec._SERVICE_WORDS
-        )
-        if not core:
-            return {
-                "found": False,
-                "message": (
-                    f"Мы уже оформляем заказ для техники {st['vehicle']}. "
-                    "Назовите конкретную запчасть — название или артикул."
-                ),
-                "source": "1c",
-            }
-        res = call_lookup_parts(core, st["vehicle"])
-        if not res.get("found") and st["item"]:
-            res = call_lookup_parts(f"{st['item']} {core}", st["vehicle"])
-        res["table"] = _parts_table_with_stock(res.get("parts", []), st["vehicle"])
-        if res.get("found") and len(res.get("parts", [])) == 1:
-            st["part"] = res["parts"][0]
-            st["stage"] = "await_part_confirm"
-            st["fails"] = 0
-        elif res.get("found") and len(res.get("parts", [])) > 1:
-            st["last_variants"] = res["parts"]
-            st["fails"] = 0
-        else:
-            st["fails"] = st.get("fails", 0) + 1
-        return res
-    if stage == "await_part_confirm":
-        if _is_no(t_short):
-            st["stage"] = "await_part"
-            return {
-                "found": False,
-                "message": "Хорошо. Назовите другую запчасть — вид или артикул.",
-                "source": "1c",
-            }
-        kind = _classify_utterance(text)
-        if kind in ("meta", "chatter") or st.get("fails", 0) >= 2:
-            st["fails"] = 0
-            intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
-            ans = build_answer(text, intent, None)
-            return {"found": False, "message": ans, "source": "llm"}
-        p = st["part"] or {}
-        use_qty = _extract_qty(text) or st.get("qty") or 1
-        try:
-            stocks = onec.stock_for_item(p.get("article") or p.get("name") or text)
-        except Exception as e:
-            return {
-                "found": False,
-                "message": f"Не удалось проверить остатки: {e}",
-                "source": "1c",
-            }
-        if stocks["E"] >= use_qty:
-            source = "E"
-        elif stocks["C"] >= use_qty:
-            source = "C"
-        elif stocks["O"] >= use_qty:
-            source = "O"
-        else:
-            source = "S"
-        st["items"].append({"part": p, "qty": use_qty, "source": source})
-        st["qty"] = 1
-        st["stage"] = "await_part"
+    """Один ход сценария (ScenarioFrame). Реплика сначала интерпретируется
+    семантически относительно frame/focus/pending, затем ScenarioManager
+    применяет typed-команды. stage не используется для понимания реплики."""
+    chat_id = st.get("_chat_id")
+    session = _session(chat_id)
+    manager = _scenario_manager()
+    frame = session.active if session else None
+    if frame is None:
         return {
-            "found": True,
-            "message": (
-                f"Добавил в заказ: {p['name']} (арт. {p.get('article', '')}) — "
-                f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. "
-                "Добавить ещё позицию или сохраняем заказ?"
-            ),
-            "table": build_cart_table(st),
+            "found": False,
+            "message": "Нет активного сценария. Скажите, что нужно.",
             "source": "1c",
         }
-    if stage == "await_order_confirm":
-        if t_short in _NO_WORDS:
-            st["stage"] = "await_order_discard"
+
+    # 0) подтверждение создания документов: только явное «да» исполняет.
+    #    Любая другая реплика — обычная интерпретация данных; правка после
+    #    показа подтверждения инвалидирует PendingAction (Case 6).
+    if frame.pending_action is not None:
+        if _is_yes(t_short):
+            r = manager.apply(session, Command(kind="confirm_pending"))
+            if r.ok and r.status == "executed":
+                docs = dict(r.data.get("docs", {}))
+                docs.pop("frame_payload", None)
+                st["docs"] = docs
+                table = build_cart_table(st, done=True)
+                _dialog_reset(st)
+                st["docs"] = docs  # ссылки на документы остаются видимыми после сброса
+                return {
+                    "found": True,
+                    "message": r.data.get("message", ""),
+                    "table": table,
+                    "source": "1c",
+                }
             return {
                 "found": False,
-                "message": ("Хорошо. Продолжаем работать с этим заказом или не сохраняем его?"),
+                "message": r.message or "Не удалось создать документы.",
                 "source": "1c",
             }
-        try:
-            res = onec.create_repair_order(st["items"], st["vehicle"])
-        except Exception as e:
+        if _is_no(t_short):
+            manager.apply(session, Command(kind="reject_pending"))
+            frame.status = "discarding"
+            _sync_legacy_state(chat_id)
             return {
                 "found": False,
-                "message": f"Не удалось создать документы: {e}",
+                "message": "Хорошо. Продолжаем работать с этим заказом или не сохраняем его?",
                 "source": "1c",
             }
-        st["docs"] = res["docs"]
-        table = build_cart_table(st, done=True)
-        _dialog_reset(st)
-        st["docs"] = res["docs"]  # ссылки на документы остаются видимыми после сброса
-        return {"found": True, "message": res["message"], "table": table, "source": "1c"}
-    if stage == "await_order_discard":
+        # иначе — реплика НЕ подтверждение: идём в обычную интерпретацию ниже;
+        # любое изменение данных само инвалидирует pending_action (версия frame).
+
+    # 1) статус «продолжаем или не сохраняем?»
+    if frame.status == "discarding":
         if t_short in _ORDER_CONTINUE_WORDS:
-            st["stage"] = "await_part"
+            frame.status = "active"
+            _sync_legacy_state(chat_id)
             return {
                 "found": False,
                 "message": "Хорошо, продолжаем. Можно назвать ещё запчасть или скажите «оформляй».",
@@ -762,7 +819,566 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             "message": "Уточните: продолжаем работать с этим заказом или не сохраняем?",
             "source": "1c",
         }
-    return {"found": False, "message": "Неизвестный шаг диалога.", "source": "1c"}
+
+    # 2) ожидание выбора/подтверждения кандидата (ambiguous ссылочное поле)
+    res_path = frame.pending_resolution
+    if res_path:
+        return _interpret_resolution(session, frame, st, text, t_short, qty, history)
+
+    # 3) общая интерпретация реплики относительно frame
+    return _interpret_free(session, frame, st, text, t_short, qty, history)
+
+
+_ORDINAL_WORDS = {
+    "первый": 0,
+    "первая": 0,
+    "первое": 0,
+    "1": 0,
+    "второй": 1,
+    "вторая": 1,
+    "второе": 1,
+    "2": 1,
+    "третий": 2,
+    "третья": 2,
+    "3": 2,
+}
+
+_FINALIZE_WORDS = (
+    "оформи",
+    "оформля",
+    "оформим",
+    "оформить",
+    "создава",
+    "создай",
+    "создать",
+    "достаточно",
+    "хватит",
+    "сохраня",
+    "сохрани",
+    "сохраняем",
+)
+
+_ADD_ROW_RE = re.compile(r"(добав|созда)\w*\s+(ещ[её]\s+)?(строку|позици\w+)", re.IGNORECASE)
+_DEL_ROW_RE = re.compile(
+    r"удал\w*\s+(перв\w+|втор\w+|трет\w+|последн\w+)?\s*(строк\w+|позици\w+)?", re.IGNORECASE
+)
+_ORDINAL_ROW_RE = re.compile(r"(перв|втор|трет|четв|последн)\w*\s*(строк|позици)", re.IGNORECASE)
+_ROW_QTY_RE = re.compile(r"(строк\w*|позици\w*)", re.IGNORECASE)
+_BACK_VEHICLE_RE = re.compile(r"верн\w+\s+к\s+(техник|машин)", re.IGNORECASE)
+_VEHICLE_CORRECT_RE = re.compile(
+    r"(?:нет,?\s*)?техник\w*\s+(?:вс[её][-\s]?таки\s+)?(?:теперь\s+)?(.+)$", re.IGNORECASE
+)
+
+
+def _row_ordinal_from_text(t_short: str) -> str | None:
+    m = _ORDINAL_ROW_RE.search(t_short)
+    if not m:
+        return None
+    root = m.group(1)
+    if root.startswith("перв"):
+        return "1"
+    if root.startswith("втор"):
+        return "2"
+    if root.startswith("трет"):
+        return "3"
+    if root.startswith("последн"):
+        return "last"
+    return None
+
+
+def _candidate_message(field) -> str:
+    """Текст-подсказка по текущим кандидатам ссылочного поля."""
+    if not field.candidates:
+        return "В 1С ничего не нашлось. Попробуйте назвать иначе."
+    return "; ".join(c.name for c in field.candidates[:3]) + "."
+
+
+def _parts_table_with_stock_compat(field, vehicle: str | None):
+    return _parts_table_with_stock(
+        [{"name": c.name, "article": c.metadata.get("article", "")} for c in field.candidates],
+        vehicle,
+    )
+
+
+def _apply_row_source(session, frame, row, use_qty: int):
+    """Рассчитать источник обеспечения (E/C/O/S) по остаткам складов кейса."""
+    nom = row.fields["nomenclature"]
+    try:
+        stocks = onec.stock_for_item(nom.entity.metadata.get("article") or nom.entity.name)
+    except Exception:
+        stocks = {"E": 0, "C": 0, "O": 0}
+    if stocks["E"] >= use_qty:
+        source = "E"
+    elif stocks["C"] >= use_qty:
+        source = "C"
+    elif stocks["O"] >= use_qty:
+        source = "O"
+    else:
+        source = "S"
+    row.fields["supply_source"].set_value(source)
+    return source
+
+
+def _confirm_part_added(session, frame, st, row, use_qty: int) -> dict:
+    manager = _scenario_manager()
+    manager.apply(
+        session,
+        Command(
+            kind="set_collection_field",
+            path="items",
+            item_ref=row.item_id,
+            focus="quantity",
+            value=use_qty,
+        ),
+    )
+    r = manager.confirm_resolution(frame, f"items[{row.item_id}].nomenclature", 0)
+    if not r.ok:
+        return {
+            "found": False,
+            "message": "Не удалось подтвердить запчасть по справочнику 1С. Назовите её ещё раз.",
+            "source": "1c",
+        }
+    source = _apply_row_source(session, frame, row, use_qty)
+    _sync_legacy_state(st.get("_chat_id"))
+    p = row.fields["nomenclature"].entity
+    table = build_cart_table(st)
+    return {
+        "found": True,
+        "message": (
+            f"Добавил в заказ: {p.name} (арт. {p.metadata.get('article', '')}) — "
+            f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. "
+            "Добавить ещё позицию или сохраняем заказ?"
+        ),
+        "table": table,
+        "source": "1c",
+    }
+
+
+def _interpret_resolution(session, frame, st, text, t_short, qty, history) -> dict:
+    """Ожидается выбор/подтверждение кандидата ссылочного поля (ambiguous)."""
+    manager = _scenario_manager()
+    res_path = frame.pending_resolution
+    field = frame.field(res_path)
+    is_vehicle = res_path == "vehicle"
+    chat_id = st.get("_chat_id")
+
+    if _is_yes(t_short) and field.candidates:
+        if is_vehicle:
+            r = manager.confirm_resolution(frame, res_path, 0)
+            if not r.ok:
+                return {
+                    "found": False,
+                    "message": "Не удалось получить идентичность техники из 1С. Назовите другую.",
+                    "source": "1c",
+                }
+            _sync_legacy_state(chat_id)
+            named_item = (st.get("item") or "").strip()
+            if named_item:
+                st["item"] = None
+                return _resolve_part_mention(session, frame, st, named_item, qty, history)
+            return {
+                "found": True,
+                "message": (
+                    f"Техника подтверждена: {field.entity.name}. Какая именно запчасть "
+                    "нужна? Назовите название или артикул."
+                ),
+                "source": "1c",
+            }
+        row = _focused_row(frame)
+        use_qty = qty or st.get("qty") or 1
+        return _confirm_part_added(session, frame, st, row, use_qty)
+
+    if t_short in _NO_WORDS and not _VEHICLE_CORRECT_RE.search(t_short):
+        manager.apply(session, Command(kind="clear_field", path=res_path))
+        _sync_legacy_state(chat_id)
+        if is_vehicle:
+            return {
+                "found": False,
+                "message": "Хорошо. Назовите другую технику — марку, модель или госномер.",
+                "source": "1c",
+            }
+        return {
+            "found": False,
+            "message": "Хорошо. Назовите другую запчасть — вид или артикул.",
+            "source": "1c",
+        }
+
+    # выбор по номеру/порядку: «второй», «2»
+    ordinal = _ORDINAL_WORDS.get(t_short)
+    if ordinal is not None and ordinal < len(field.candidates):
+        manager.confirm_resolution(frame, res_path, ordinal)
+        _sync_legacy_state(chat_id)
+        if is_vehicle:
+            return _interpret_resolution(
+                session, frame, {**st, "_force_yes": True}, "да", "да", qty, history
+            )
+        row = _focused_row(frame)
+        return _confirm_part_added(session, frame, st, row, qty or st.get("qty") or 1)
+
+    # коррекция названия: новое упоминание вместо кандидатов
+    if is_vehicle:
+        m = _VEHICLE_CORRECT_RE.search((text or "").strip())
+        mention = m.group(1).strip() if m else None
+        if mention and not _is_no(t_short):
+            r = manager.apply(session, Command(kind="set_field", path="vehicle", mention=mention))
+            _sync_legacy_state(chat_id)
+            if r.status == "ambiguous":
+                return {
+                    "found": r.ok,
+                    "message": "Нашёл технику: " + field.candidates[0].name + ". Это она?",
+                    "source": "1c",
+                }
+            if r.status == "resolved":
+                return {
+                    "found": True,
+                    "message": f"Техника подтверждена: {field.entity.name}. Какая именно запчасть нужна?",
+                    "source": "1c",
+                }
+            return {
+                "found": False,
+                "message": "Техника в 1С не найдена — назовите другую.",
+                "source": "1c",
+            }
+    else:
+        core = _strip_fillers(text)
+        if core and not _is_no(t_short):
+            return _resolve_part_mention(
+                session, frame, st, core, qty, history, re_resolve=res_path
+            )
+
+    # мета/болтовня при выборе — выход к LLM (как в legacy)
+    kind = _classify_utterance(text)
+    if kind in ("meta", "chatter") or st.get("fails", 0) >= 2:
+        st["fails"] = 0
+        intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
+        ans = build_answer(text, intent, None)
+        return {"found": False, "message": ans, "source": "llm"}
+    return {"found": False, "message": "Уточните: да или нет?", "source": "1c"}
+
+
+def _resolve_part_mention(
+    session, frame, st, mention, qty, history, re_resolve: str | None = None
+) -> dict:
+    """Разрешить упоминание номенклатуры в строке корзины (строго, через 1С)."""
+    manager = _scenario_manager()
+    row = None
+    if re_resolve:
+        row_id = re_resolve.split("[", 1)[1].split("]", 1)[0]
+        row = frame.collection_item("items", row_id)
+    else:
+        row = _focused_row(frame)
+        if row is not None and row.fields["nomenclature"].filled:
+            row = None
+    if row is None:
+        r = manager.apply(session, Command(kind="append_collection_item", path="items"))
+        row_id = r.data["item_id"]
+        row = frame.collection_item("items", row_id)
+    path = f"items[{row.item_id}].nomenclature"
+    r = manager.apply(session, Command(kind="set_field", path=path, mention=mention))
+    _sync_legacy_state(st.get("_chat_id"))
+    if r.status == "ambiguous":
+        nom = frame.field(path)
+        table = _parts_table_with_stock_compat(nom, st.get("vehicle"))
+        if len(nom.candidates) == 1:
+            c = nom.candidates[0]
+            art = c.metadata.get("article", "")
+            msg = f"Нашёл запчасть: {c.name}" + (f", артикул {art}" if art else "") + ". Она?"
+        else:
+            lst = "; ".join(
+                c.name
+                + (f" (арт. {c.metadata.get('article', '')})" if c.metadata.get("article") else "")
+                for c in nom.candidates
+            )
+            tail = f" для техники {st.get('vehicle')}" if st.get("vehicle") else ""
+            msg = f"Есть варианты{tail}: {lst}. Какой нужен?"
+        return {"found": True, "message": msg, "table": table, "source": "1c"}
+    if r.status == "not_found":
+        st["fails"] = st.get("fails", 0) + 1
+        return {
+            "found": False,
+            "message": (
+                f"По '{mention}' номенклатуры в базе нет — такую запчасть мы не обрабатываем. "
+                "Назовите артикул или другую запчасть."
+            ),
+            "source": "1c",
+        }
+    if r.status == "resolved":
+        return _confirm_part_added(session, frame, st, row, qty or st.get("qty") or 1)
+    return {"found": False, "message": "Уточните запчасть.", "source": "1c"}
+
+
+def _interpret_free(session, frame, st, text, t_short, qty, history) -> dict:
+    """Семантическая интерпретация реплики относительно ScenarioFrame.
+
+    Порядок: строковые операции (адресные) -> finalize/нет -> коррекция техники
+    -> количество -> упоминание запчасти -> мета/болтовня. stage НЕ участвует.
+    """
+    manager = _scenario_manager()
+    chat_id = st.get("_chat_id")
+
+    # 0) строковые операции коллекции — НЕ поиск номенклатуры (Case 1-3)
+    if _ADD_ROW_RE.search(t_short):
+        r = manager.apply(session, Command(kind="append_collection_item", path="items"))
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": "Добавил новую строку. Какая запчасть нужна — название или артикул?",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    if _DEL_ROW_RE.search(t_short):
+        ordinal = _row_ordinal_from_text(t_short) or ("last" if "последн" in t_short else None)
+        r = manager.apply(
+            session,
+            Command(kind="remove_collection_item", path="items", item_ref=ordinal or "last"),
+        )
+        _sync_legacy_state(chat_id)
+        if r.ok:
+            return {
+                "found": True,
+                "message": "Удалил строку. Что дальше — добавим ещё или сохраняем заказ?",
+                "table": build_cart_table(st),
+                "source": "1c",
+            }
+        return {"found": False, "message": "Такой строки нет в заказе.", "source": "1c"}
+    # «во второй строке поставь три штуки» — адресное количество
+    row_ord = _row_ordinal_from_text(t_short)
+    qty_val = _extract_qty(text)
+    if qty_val and row_ord is not None:
+        r = manager.apply(
+            session,
+            Command(
+                kind="set_collection_field",
+                path="items",
+                item_ref=row_ord,
+                focus="quantity",
+                value=qty_val,
+            ),
+        )
+        _sync_legacy_state(chat_id)
+        if r.ok:
+            return {
+                "found": True,
+                "message": f"Готово: в строке {row_ord} количество {qty_val} шт.",
+                "table": build_cart_table(st),
+                "source": "1c",
+            }
+    if _BACK_VEHICLE_RE.search(t_short):
+        manager.apply(session, Command(kind="switch_focus", focus="vehicle"))
+        v = frame.fields.get("vehicle")
+        name = v.entity.name if v and v.entity else "ещё не выбрана"
+        return {
+            "found": True,
+            "message": f"Вернулся к технике: {name}. Что изменить?",
+            "source": "1c",
+        }
+
+    # 1) финализация заказа -> PendingAction (требует явного подтверждения)
+    if any(k in t_short for k in _FINALIZE_WORDS):
+        if st["items"]:
+            manager.propose_pending_action(frame, "create_repair_documents")
+            _sync_legacy_state(chat_id)
+            return {
+                "found": True,
+                "message": _cart_summary(st) + " Создаём документы?",
+                "table": build_cart_table(st),
+                "source": "1c",
+            }
+        return {
+            "found": False,
+            "message": "В заказе пока нет позиций. Назовите запчасть.",
+            "source": "1c",
+        }
+
+    # 2) «нет» без контекста выбора = завершение набора позиций
+    if _is_no(t_short) and not _VEHICLE_CORRECT_RE.search(t_short):
+        if st["items"]:
+            manager.propose_pending_action(frame, "create_repair_documents")
+            _sync_legacy_state(chat_id)
+            return {
+                "found": True,
+                "message": _cart_summary(st) + " Создаём документы?",
+                "table": build_cart_table(st),
+                "source": "1c",
+            }
+        return {
+            "found": False,
+            "message": "Позиций в заказе пока нет. Назовите запчасть — название или артикул.",
+            "source": "1c",
+        }
+
+    # 2а) «да» без ожидаемого подтверждения — документов не создаёт
+    if t_short in _YES_WORDS:
+        return {
+            "found": False,
+            "message": "Сейчас нечего подтверждать. Скажите «оформляй», чтобы сохранить заказ.",
+            "source": "1c",
+        }
+
+    # 3) коррекция техники (Case 4): «нет, техника всё-таки МТЗ-82»
+    if "техник" in t_short:
+        m = _VEHICLE_CORRECT_RE.search((text or "").strip())
+        mention = (m.group(1) if m else "").strip()
+        if mention:
+            r = manager.apply(session, Command(kind="set_field", path="vehicle", mention=mention))
+            _sync_legacy_state(chat_id)
+            v = frame.fields["vehicle"]
+            if r.status == "ambiguous":
+                return {
+                    "found": r.ok,
+                    "message": f"Нашёл технику: {v.candidates[0].name}. Это она?",
+                    "source": "1c",
+                }
+            if r.status == "resolved":
+                return {
+                    "found": True,
+                    "message": f"Техника теперь: {v.entity.name}. Запчасть подберу заново — назовите её.",
+                    "source": "1c",
+                }
+            return {
+                "found": False,
+                "message": "Такой техники в 1С нет. Назовите другую.",
+                "source": "1c",
+            }
+
+    # 4) количество к текущей строке
+    if qty_val and not row_ord:
+        row = _focused_row(frame)
+        if row is not None and row.fields["nomenclature"].filled:
+            r = manager.apply(
+                session,
+                Command(
+                    kind="set_collection_field",
+                    path="items",
+                    item_ref=row.item_id,
+                    focus="quantity",
+                    value=qty_val,
+                ),
+            )
+            _sync_legacy_state(chat_id)
+            if r.ok:
+                return {
+                    "found": True,
+                    "message": f"Количество: {qty_val} шт.",
+                    "table": build_cart_table(st),
+                    "source": "1c",
+                }
+
+    # 5)schema-driven: незаполненная обязательная техника — голое существительное
+    # это упоминание ТЕХНИКИ (заказ всегда от техники), а не запчасти
+    vehicle = frame.fields.get("vehicle")
+    if vehicle is not None and not vehicle.filled:
+        search_text = _strip_fillers(text)
+        core = " ".join(
+            t
+            for t in search_text.split()
+            if t.lower() not in _INTENT_WORDS and t.lower() not in onec._SERVICE_WORDS
+        )
+        if not core:
+            return {
+                "found": False,
+                "message": "Для какой техники нужна запчасть? Назовите марку, модель или госномер.",
+                "source": "1c",
+            }
+        r = manager.apply(session, Command(kind="set_field", path="vehicle", mention=core))
+        _sync_legacy_state(chat_id)
+        if r.status == "ambiguous":
+            return {
+                "found": r.ok,
+                "message": f"Нашёл технику: {vehicle.candidates[0].name}. Это она?",
+                "source": "1c",
+            }
+        if r.status == "resolved":
+            return {
+                "found": True,
+                "message": f"Техника подтверждена: {vehicle.entity.name}. Какая именно запчасть нужна?",
+                "source": "1c",
+            }
+        st["fails"] = st.get("fails", 0) + 1
+        res = call_lookup_vehicle(core)
+        return {
+            "found": False,
+            "message": res.get("message") or f"Техника '{core}' в 1С не найдена. Назовите другую.",
+            "source": "1c",
+        }
+
+    # 6) мета-вопрос: повторить варианты / состояние заказа
+    kind = _classify_utterance(text)
+    if kind == "meta":
+        return {
+            "found": False,
+            "message": (
+                f"Мы оформляем заказ для техники {st.get('vehicle')}. "
+                "Назовите запчасть — название или артикул, либо скажите «оформляй»."
+            ),
+            "source": "1c",
+        }
+
+    # 7) болтовня / 2 подряд неудачи -> LLM (с проекцией frame)
+    if kind == "chatter" or st.get("fails", 0) >= 2:
+        st["fails"] = 0
+        intent, _raw = lm_intent(text, history, extra_system=_render_state(st))
+        ans = build_answer(text, intent, None)
+        return {"found": False, "message": ans, "source": "llm"}
+
+    # 8) содержательное упоминание запчасти -> строгий lookup
+    search_text = _strip_fillers(text)
+    core = " ".join(
+        t
+        for t in search_text.split()
+        if t.lower() not in _INTENT_WORDS and t.lower() not in onec._SERVICE_WORDS
+    )
+    if not core:
+        return {
+            "found": False,
+            "message": (
+                f"Мы уже оформляем заказ для техники {st.get('vehicle')}. "
+                "Назовите конкретную запчасть — название или артикул."
+            ),
+            "source": "1c",
+        }
+    st["fails"] = st.get("fails", 0)
+    return _resolve_part_mention(session, frame, st, core, qty, history)
+
+
+def _run_stock_scenario(
+    chat_id: str, item: str | None, warehouse: str | None, action: str | None
+) -> dict:
+    """STOCK_QUERY как параллельный ScenarioFrame: активный frame не теряется.
+
+    Строгое разрешение ссылки: без resolved-идентичности запрос не исполняется;
+    в этом случае вызываемая сторона может откатиться на прямой запрос."""
+    session = _session(chat_id)
+    manager = _scenario_manager()
+    stock_frame = manager.start_scenario(session, "stock_query")
+    try:
+        if item:
+            r = manager.apply(session, Command(kind="set_field", path="nomenclature", mention=item))
+            if r.status != "resolved":
+                nom = stock_frame.fields["nomenclature"]
+                if r.status == "ambiguous":
+                    return {
+                        "found": False,
+                        "message": "Уточните, какой именно товар: " + _candidate_message(nom),
+                        "source": "1c",
+                    }
+                return {
+                    "found": False,
+                    "message": f"Товар '{item}' в 1С не найден.",
+                    "source": "1c",
+                }
+        if warehouse:
+            manager.apply(session, Command(kind="set_field", path="warehouse", mention=warehouse))
+        nom = stock_frame.fields["nomenclature"]
+        wh = stock_frame.fields.get("warehouse")
+        wh_name = wh.entity.name if (wh and wh.entity and wh.filled) else None
+        if action == "list_stock" and not item and wh_name:
+            return stock_at_warehouse_view(wh_name)
+        res = onec.query_stock(nom.entity.name, wh_name)
+        return res
+    finally:
+        manager.cancel_scenario(session, stock_frame)
+        _sync_legacy_state(chat_id)
 
 
 # END_BLOCK_DIALOG_FSM
@@ -1221,7 +1837,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
                 wh_s = _map_warehouse((intent or {}).get("warehouse"))
                 t_stock = metrics.ms()
                 try:
-                    stock = call_stock(item_s, wh_s, (intent or {}).get("action"))
+                    # параллельный STOCK_QUERY frame: активный сценарий не теряется
+                    stock = _run_stock_scenario(chat_id, item_s, wh_s, (intent or {}).get("action"))
                 except Exception as e:
                     stock = {"found": False, "message": f"Не удалось получить остаток: {e}"}
                 stock_ms = metrics.ms() - t_stock
@@ -1305,6 +1922,11 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         t_low = text.lower()
         if any(k in t_low for k in ("заказ", "заказать", "закажи", "запчаст")):
             st.update({"stage": "await_vehicle", "item": None, "qty": 1})
+            # сценарий REPAIR_ORDER стартует и в fallback-ветке (frame — истина)
+            _fallback_session = _session(chat_id)
+            if _fallback_session.active is None:
+                _scenario_manager().start_scenario(_fallback_session, "repair_order")
+                _sync_legacy_state(chat_id)
             intent = {"action": "order_fallback"}
             fallback_stock = {
                 "found": False,
@@ -1324,7 +1946,7 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
     if fallback_stock is not None:
         stock_ms = 0.0
     if action == "request_part" and (item or (intent or {}).get("vehicle")):
-        # старт лестницы: строгое подтверждение техники по справочнику 1С
+        # старт сценария REPAIR_ORDER: строгое разрешение техники по 1С (EntityRef)
         t_stock = metrics.ms()
         st_item = _strip_fillers(item) or None
         st_vehicle = str((intent or {}).get("vehicle") or "") or None
@@ -1333,16 +1955,33 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
             # анонимный запрос (без чата) — прежний прямой цикл
             stock = call_part_api(st_item, st_vehicle or "", st_qty)
         else:
+            session = _session(chat_id)
+            manager = _scenario_manager()
+            frame = session.active
+            if frame is None or frame.scenario_type != "repair_order":
+                frame = manager.start_scenario(session, "repair_order")
             st.update({"stage": "await_vehicle", "item": st_item, "qty": st_qty})
             if st_vehicle:
                 stock = call_lookup_vehicle(st_vehicle)
+                manager.apply(
+                    session, Command(kind="set_field", path="vehicle", mention=st_vehicle)
+                )
                 if stock.get("found") and len(stock.get("vehicles", [])) == 1:
-                    st["vehicle"] = stock["vehicles"][0]
                     st["stage"] = "await_vehicle_confirm"
             else:
                 stock = {
                     "found": False,
                     "message": "Для какой техники нужна запчасть? Назовите марку, модель или госномер.",
+                }
+            _sync_legacy_state(chat_id)
+            if (
+                st_vehicle
+                and st.get("stage") == "await_vehicle_confirm"
+                and len(session.active.fields["vehicle"].candidates) == 1
+            ):
+                stock = {
+                    "found": False,
+                    "message": f"Нашёл технику: {session.active.fields['vehicle'].candidates[0].name}. Это она?",
                 }
         stock_ms = metrics.ms() - t_stock
     elif action == "lookup_vehicle":
@@ -1602,6 +2241,38 @@ def transcript(chat_id: str):
 @app.get("/monitor", response_class=HTMLResponse)
 def monitor():
     return HTMLResponse(content=(HERE / "static" / "monitor.html").read_text(encoding="utf-8"))
+
+
+@app.get("/scenario")
+def scenario_view(chat_id: str):
+    """Read-only debug: активные frame, focus, resolved/unresolved, pending."""
+    session = _session(chat_id)
+    if session is None:
+        return {"chat_id": chat_id, "frames": []}
+    manager = _scenario_manager()
+    frames = []
+    for frame in session.frames.values():
+        frames.append(
+            {
+                "id": frame.id,
+                "scenario_type": frame.scenario_type,
+                "status": frame.status,
+                "version": frame.version,
+                "active": frame.id == session.active_frame_id,
+                "projection": manager.compact_projection(frame),
+                "pending_action": (
+                    {
+                        "id": frame.pending_action.id,
+                        "type": frame.pending_action.type,
+                        "frame_version": frame.pending_action.frame_version,
+                        "stale": not frame.pending_action.matches_version(frame),
+                    }
+                    if frame.pending_action
+                    else None
+                ),
+            }
+        )
+    return {"chat_id": chat_id, "active_frame_id": session.active_frame_id, "frames": frames}
 
 
 # GRACE: стабильный публичный экспорт (для точной проверки поверхности)

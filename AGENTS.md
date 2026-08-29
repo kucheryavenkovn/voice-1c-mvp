@@ -4,7 +4,7 @@
 речи, определение намерения, проверка остатков, подбор запчастей для техники,
 создание документов обеспечения и голосовой ответ.
 
-Ключевые слова: voice, 1c, stt, tts, llm, fastapi, mcp, inventory, parts, dialogue-fsm, erp
+Ключевые слова: voice, 1c, stt, tts, llm, fastapi, mcp, inventory, parts, scenario-frame, erp
 
 ## GRACE 4
 
@@ -56,7 +56,12 @@ grace lint --path . --change C-ИМЯ --assertions target --runCommands  # ас�
 
 ## Быстрая шпаргалка по проекту
 
-- Оркестратор и FSM диалога: `voice-gateway/app.py` (M-VOICE-GATEWAY)
+- Оркестратор и интерпретация реплик: `voice-gateway/app.py` (M-VOICE-GATEWAY,
+  M-COMMAND-INTERPRETER)
+- Сценарная подсистема: `voice-gateway/scenarios/` — ScenarioFrame, менеджер,
+  resolver, проекция, execution gate (M-SCENARIO-MANAGER, M-ENTITY-RESOLVER)
+- Декларативные определения сценариев: `voice-gateway/scenarios/definitions/*.yaml`
+  (repair_order, stock_query; M-SCENARIO-DEFINITIONS)
 - Интеграция с 1С (MCP Toolkit): `voice-gateway/onec.py` (M-1C-ADAPTER)
 - Метрики/трейсы: `voice-gateway/metrics.py` (M-OBSERVABILITY)
 - Сервисы: `stt/app.py`, `tts/app.py`, `mock-api/app.py`
@@ -64,3 +69,33 @@ grace lint --path . --change C-ИМЯ --assertions target --runCommands  # ас�
 - Данные кейса: `fixtures/case-parts/`, `fixtures/voice/`, `scripts/1c-case/`
 - Запуск стека: `docker compose up -d`; 1С-обработка MCP_Toolkit на :6003;
   vLLM на :18020 (`enable_thinking=false`).
+
+## Архитектурный инвариант: ScenarioFrame, а не FSM
+
+Бизнес-состояние — персистентный `ScenarioFrame` на бэкенде
+(`voice-gateway/scenarios/`), а НЕ линейная лестница (историческая FSM-«лестница»
+осталась только как legacy-проекция `stage` для UI/тестов) и НЕ память LLM:
+
+```text
+REPAIR_ORDER (ScenarioFrame)
+  vehicle:  resolved  Трактор Кировец К-744Р [ref ТР-0000008]
+  items:
+    item-A: nomenclature=resolved (Диск DK-300), quantity=5
+    item-B: nomenclature=missing, quantity=2
+  focus: items[item-B].nomenclature
+  pending_action: нет
+```
+
+Правила:
+1. Реплика сначала интерпретируется семантически (frame + focus + pending +
+   проекция), затем ScenarioManager применяет typed-команды; `stage` семантику
+   реплики не определяет.
+2. Ссылочное поле заполняется только EntityRef из 1С (mention → resolver →
+   код/ссылка); ambiguous/not_found — не «заполнено».
+3. Смена влияющего поля (техники) инвалидирует зависимые разрешения по схеме
+   YAML; независимые данные (количество) сохраняются.
+4. Write-эффекты (документы 1С) — только через PendingAction, подтверждённый
+   для актуальной версии frame; любая правка после «Создаём документы?»
+   инвалидирует подтверждение.
+5. Параллельный сценарий (STOCK_QUERY внутри REPAIR_ORDER) не уничтожает
+   активный frame; полная история чата не нужна для продолжения сценария.

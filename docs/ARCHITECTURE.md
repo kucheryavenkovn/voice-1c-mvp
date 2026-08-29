@@ -1,5 +1,46 @@
 # Архитектура
 
+## Архитектура диалога: ScenarioFrame (с C-SCENARIO-FRAMES)
+
+Бизнес-состояние диалога — персистентный **ScenarioFrame** на бэкенде
+(`voice-gateway/scenarios/`), а не память LLM и не линейная FSM-«лестница».
+
+```text
+audio/text → STT → интерпретация реплики (typed commands)
+          → ScenarioManager → ScenarioFrame → EntityResolver → 1C
+          → подтверждение (execution gate) → ответ → TTS
+```
+
+Ключевые элементы:
+
+| Элемент | Где | Смысл |
+|---------|-----|-------|
+| `ScenarioFrame` | `scenarios/models.py` | поля, коллекции (стабильные `item_id`), статусы разрешения, `focus`, `pending_action`, версия |
+| Определения сценариев | `scenarios/definitions/*.yaml` | декларативные схемы (обязательность, зависимости/инвалидация), валидируются при загрузке |
+| `ScenarioManager` | `scenarios/manager.py` | применяет закрытый набор typed-команд; централизованная инвалидация; PendingAction |
+| `EntityResolver` | `scenarios/resolver.py` | mention → 1С → точный `EntityRef` (код/ссылка); ambiguous/not_found ≠ заполнено |
+| Проекция | `scenarios/projection.py` | компактное состояние frame для маленького context window LLM (без истории чата) |
+| Execution gate | `scenarios/execution.py` + `PendingAction` | документы 1С — только после явного подтверждения актуальной версии frame |
+
+Пример frame и правки без переходов по FSM:
+
+```text
+REPAIR_ORDER
+  vehicle:  resolved  Трактор Кировец К-744Р [ref ТР-0000008]
+  items:
+    item-A: nomenclature=resolved (Диск DK-300), quantity=5
+    item-B: nomenclature=missing, quantity=2
+  focus: items[item-B].nomenclature
+
+реплика: «во второй строке поставь три штуки»
+→ set_collection_field(items[item-B].quantity = 3)
+→ версия frame++, PendingAction (если был) инвалидируется
+```
+
+Историческая FSM-«лестница» (`stage = await_*`) осталась только как
+legacy-проекция для UI/тестов (`_sync_legacy_state`) — она не определяет
+семантику реплик.
+
 ## Компоненты
 
 ```

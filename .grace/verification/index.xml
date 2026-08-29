@@ -13,6 +13,10 @@
         <V-M-WEB-CHAT />
         <V-M-WEB-DIAG />
         <V-M-WEB-MONITOR />
+        <V-M-SCENARIO-MANAGER />
+        <V-M-SCENARIO-DEFINITIONS />
+        <V-M-ENTITY-RESOLVER />
+        <V-M-COMMAND-INTERPRETER />
       </Owns>
     </VD-MAIN>
   </VerificationDocuments>

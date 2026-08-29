@@ -1,0 +1,40 @@
+# Заказ запчасти для техники -> один ЗаказНаРемонт + документы обеспечения.
+# Источник бизнес-логики: voice-gateway/onec.py (create_repair_order, BSL кейса).
+scenario_type: repair_order
+title: Заказ на ремонт (обеспечение)
+
+fields:
+  vehicle:
+    kind: entity
+    entity_type: vehicle
+    required: true
+    confirm_required: true
+    title: Техника
+    # смена техники инвалидирует подобранные под неё кандидатов номенклатуры
+    invalidates:
+      - items[].nomenclature
+
+collections:
+  items:
+    item_label: позиция
+    min_items: 1
+    fields:
+      nomenclature:
+        kind: entity
+        entity_type: part
+        required: true
+        confirm_required: true
+        title: Запчасть
+      quantity:
+        kind: scalar
+        required: true
+        default: 1
+        min: 1
+        title: Количество
+      supply_source:
+        kind: calculated
+        title: Источник обеспечения
+
+execution:
+  action_type: create_repair_documents
+  confirmation_phrase: "Создаём документы?"

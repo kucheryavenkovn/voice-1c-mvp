@@ -1,0 +1,28 @@
+# Проверка остатков по товару (опц. на складе). Только чтение.
+# Источник: voice-gateway/onec.py (query_stock / stock_at_warehouse).
+scenario_type: stock_query
+title: Проверка остатков
+
+fields:
+  nomenclature:
+    kind: entity
+    entity_type: nomenclature
+    required: true
+    title: Товар
+    # разрешается точным именем/артикулом из запроса остатков (onec.query_stock)
+    resolve: stock_item
+  warehouse:
+    kind: entity
+    entity_type: warehouse
+    required: false
+    title: Склад
+    # не назван -> остатки по всем доступным складам (как в текущем поведении)
+  mode:
+    kind: scalar
+    required: false
+    default: single
+    title: Режим (single|list)
+
+execution:
+  action_type: run_stock_query
+  confirmation_phrase: ""
