@@ -1428,6 +1428,8 @@ def _run_stock_scenario(
     session = _session(chat_id)
     manager = _scenario_manager()
     stock_frame = manager.start_scenario(session, "stock_query")
+    # LLM может вернуть декорированное имя («Диск … [DK-300]») — срезаем скобки
+    item = re.sub(r"\[[^\]]*\]", "", item).strip() if item else item
     try:
         if item:
             r = manager.apply(session, Command(kind="set_field", path="nomenclature", mention=item))
