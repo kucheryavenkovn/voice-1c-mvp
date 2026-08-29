@@ -16,6 +16,7 @@
         <DF-VOICE-TURN />
         <DF-PART-ORDER />
         <DF-OBSERVABILITY />
+        <DF-STOCK-QUERY />
       </Owns>
     </GD-MAIN>
   </GraphDocuments>

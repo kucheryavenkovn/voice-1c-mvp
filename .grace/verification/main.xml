@@ -50,16 +50,18 @@
       <TestFiles>
         <File>tools/control_scenario.py</File>
       </TestFiles>
-      <Command>python tools/control_scenario.py (требует поднятого стека и 1С)</Command>
+      <Command>python tools/control_scenario.py</Command>
       <Scenario>Голосовые фикстуры fixtures/voice/*.wav распознаются и проходят диалог 14/14 (см. transcript-last.txt).</Scenario>
+      <Notes>Живое окружение: требует поднятого стека (docker compose up) и доступной 1С. Локальная регрессия, не блокирует unit/integration CI.</Notes>
     </V-M-STT>
 
     <V-M-TTS>
       <TestFiles>
         <File>scripts/voice_fixtures.py</File>
       </TestFiles>
-      <Command>python scripts/voice_fixtures.py (требует tts:8101)</Command>
+      <Command>python scripts/voice_fixtures.py</Command>
       <Scenario>Фразы сценария синтезируются в WAV-фикстуры без ошибок.</Scenario>
+      <Notes>Живое окружение: требует работающего TTS-сервиса (tts:8101) с голосом Piper. Локальная проверка, не блокирует unit/integration CI.</Notes>
     </V-M-TTS>
 
     <V-M-WEB-CHAT>
@@ -75,9 +77,7 @@
         <File>tests/test_gateway.py</File>
       </TestFiles>
       <Command>pytest -q tests/test_gateway.py::test_diag_page</Command>
-      <Scenarios>
-        <Scenario kind="success">Страница диагностики /diag отдаётся и содержит VAD-элементы.</Scenario>
-      </Scenarios>
+      <Scenario>Страница диагностики /diag отдаётся и содержит VAD-элементы.</Scenario>
     </V-M-WEB-DIAG>
 
     <V-M-WEB-MONITOR>
@@ -85,9 +85,7 @@
         <File>tests/test_observability.py</File>
       </TestFiles>
       <Command>pytest -q tests/test_observability.py</Command>
-      <Scenarios>
-        <Scenario kind="success">Страница /monitor отдаётся и отображает агрегаты этапов и LM-метрики.</Scenario>
-      </Scenarios>
+      <Scenario>Страница /monitor отдаётся и отображает агрегаты этапов и LM-метрики.</Scenario>
     </V-M-WEB-MONITOR>
 </VD-MAIN>
 </GraceVerificationDocument>

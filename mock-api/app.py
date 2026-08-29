@@ -7,6 +7,7 @@ from pydantic import BaseModel
 #   DEPENDS: none
 #   LINKS: M-MOCK-1C, V-M-MOCK-1C
 #   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
@@ -195,3 +196,23 @@ def create_order(body: OrderBody):
 @app.get("/api/orders")
 def list_orders():
     return {"orders": list(_orders), "count": len(_orders)}
+
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "ORDER_STATUS",
+    "STOCK",
+    "OrderBody",
+    "OrderResponse",
+    "StockBody",
+    "StockItem",
+    "StockResponse",
+    "Warehouse",
+    "app",
+    "create_order",
+    "get_stock",
+    "get_stock_post",
+    "health",
+    "list_orders",
+    "lookup",
+]

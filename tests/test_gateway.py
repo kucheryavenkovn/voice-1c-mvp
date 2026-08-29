@@ -389,6 +389,7 @@ def test_stock_fallback_trigger(gw):
     r = gw.client.post("/ask-text", json={"text": "остатки?", "chat_id": "fb2"})
     assert "По какому товару" in unquote(r.headers["X-Answer"])
 
+
 def test_extract_qty_strict():
     """Количество — только с 'шт': 'дк сто'/'дк 100' не превращаются в 100 шт."""
     assert app._extract_qty("да, добавь 5 штук в заказ") == 5

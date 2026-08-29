@@ -8,38 +8,51 @@
 
 ## GRACE 4
 
-Проект управляется фреймворком GRACE 4 (каталог `.grace/`, CLI `@osovv/grace-cli`).
+Проект управляется фреймворком GRACE 4 (каталог `.grace/`, CLI `@osovv/grace-cli`,
+закреплено: 4.0.5). Все команды GRACE работают с каталогом `.grace/`.
 
-- **Источник истины по архитектуре** — `.grace/graph/main.xml` (модули `M-*`,
-  потоки `DF-*`). Индекс якорей — `.grace/graph/index.xml`.
-- **Требования/технологии/принципы/деплой/UX** — `.grace/context/*.xml`.
-- **Verification** — `.grace/verification/main.xml` (`V-M-*` привязаны к
-  реальным тестам и прогонам; для LM- и stock-изменений запускайте
-  `pytest -q tests/...` из соответствующих записей).
-- **Изменения** — `.grace/changes/active/C-GRACE-RETROFIT/` (текущий ретрофит,
-  status: approved). Завершённые бандлы переносите в `archive/` со сменой
-  статуса на `applied`.
+- **Текущие требования и ограничения** — `.grace/context/*.xml`
+  (requirements, technology, principles, deployment, ux-guidelines).
+- **Источник истины по модулям и зависимостям** — `.grace/graph/main.xml`
+  (модули `M-*`, потоки `DF-*`); индекс — `.grace/graph/index.xml`.
+- **Связь модулей с проверками** — `.grace/verification/main.xml`
+  (`V-M-*` привязаны к реальным тестам; `Command` содержит только исполняемую
+  команду, требования живого окружения — в `Notes`/`Scenario`).
+- **Изменения** — `.grace/changes/active/C-*/` (spec.xml + plan.xml);
+  завершённые бандлы переносятся в `.grace/changes/archive/` со статусом
+  `applied` у spec и plan.
 
 ### Правила для агентов
-1. Любое изменение публичной поверхности модуля отражайте в MODULE_CONTRACT
-   файла и в `.grace/graph/main.xml` (CrossLinks через LINKS).
-2. Новые ключевые функции снабжайте контрактом `START_CONTRACT: имя … END_CONTRACT: имя`.
-3. Крупные смысловые участки оборачивайте уникальными парами
-   `START_BLOCK_<ИМЯ>` / `END_BLOCK_<ИМЯ>` (~500 токенов на блок).
-4. Runtime-маркеры вида `[VoiceGateway][функция][BLOCK_<ИМЯ>]` — стабильны;
-   verification-записи могут требовать их как доказательство.
-5. Перед коммитом: `grace lint --path .`, `ruff check .`, `pytest -m "not ui"`.
 
-### CLI
+1. `.grace/context` — текущие требования и ограничения.
+2. `.grace/graph` — источник истины по модулям и зависимостям.
+3. `.grace/verification` — связь модулей с проверками.
+4. Изменение архитектуры сопровождается изменением graph.
+5. Изменение поведения сопровождается изменением verification.
+6. Значимые новые функции получают контракт `START_CONTRACT: имя … END_CONTRACT: имя`.
+7. Значимые смысловые области получают пары `START_BLOCK_<ИМЯ>` / `END_BLOCK_<ИМЯ>`
+   (ориентир — несколько сотен токенов; без микроблоков).
+8. Старые semantic anchor IDs (`M-*`, `DF-*`, `V-M-*`, `BLOCK_*`) без
+   необходимости не переименовываются.
+9. Любое изменение публичной поверхности модуля отражается в MODULE_CONTRACT,
+   `__all__`/MODULE_MAP файла и в `.grace/graph/main.xml` (LINKS).
+10. Runtime-маркеры вида `[VoiceGateway][функция][BLOCK_<ИМЯ>]` /
+    `[OneCAdapter][функция][BLOCK_<ИМЯ>]` соответствуют реальным semantic
+    blocks; verification-записи могут требовать их как доказательство.
+11. Перед коммитом: `grace lint --path .`, `ruff check .`, `ruff format --check .`,
+    `pytest -m "not ui"`.
+
+### CLI (проверено на 4.0.5)
+
 ```bash
-grace lint --path .          # целостность каталога и разметки
-grace status --path .        # здоровье, активные changes, next action
-grace file show voice-gateway/app.py --contracts --blocks   # навигация по файлу
+grace lint --path .            # целостность каталога, разметки и maps
+grace status --path .          # здоровье, active/archive changes, next action
+grace file show voice-gateway/app.py --contracts --blocks   # разметка файла
+grace module show M-VOICE-GATEWAY --path .                  # карточка модуля
+grace module health M-OBSERVABILITY --path .                # здоровье модуля
+grace verification show V-M-1C-ADAPTER --path .             # запись проверки
+grace lint --path . --change C-ИМЯ --assertions target --runCommands  # ассерты активного C-*
 ```
-
-Примечание: CLI 4.0.5 переходный — `grace lint/status` работают с каталогом
-`.grace/`, а `grace module/verification/file`-запросы требуют классических
-`docs/*.xml`. В проекте источником истины является `.grace/`.
 
 ## Быстрая шпаргалка по проекту
 

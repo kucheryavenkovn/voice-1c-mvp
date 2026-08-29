@@ -84,6 +84,17 @@
       <M-1C-ADAPTER />
     </DF-PART-ORDER>
 
+    <DF-STOCK-QUERY>
+      <Summary>
+        Stock request (voice or text) -> gateway stock routing ->
+        1C adapter query (mock fallback) -> answer/tables.
+      </Summary>
+      <M-WEB-CHAT />
+      <M-VOICE-GATEWAY />
+      <M-1C-ADAPTER />
+      <M-MOCK-1C />
+    </DF-STOCK-QUERY>
+
     <DF-OBSERVABILITY>
       <Summary>
         Runtime timings and trace evidence from gateway to monitoring UI.

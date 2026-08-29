@@ -18,39 +18,24 @@ from pydantic import BaseModel
 #   PURPOSE: Оркестрирует голосовой и текстовый диалог с 1С.
 #   SCOPE: HTTP API, dialogue FSM, LLM intent, stock/order routing, TTS response.
 #   DEPENDS: M-STT, M-TTS, M-1C-ADAPTER, M-MOCK-1C, M-OBSERVABILITY
-#   LINKS: M-VOICE-GATEWAY, V-M-VOICE-GATEWAY, DF-VOICE-TURN, DF-PART-ORDER
+#   LINKS: M-VOICE-GATEWAY, V-M-VOICE-GATEWAY, DF-VOICE-TURN, DF-PART-ORDER, DF-STOCK-QUERY
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   app - FastAPI application instance
-#   chat_history - история чата по chat_id
-#   chat_append - добавить ход в историю
-#   _dialog_state - состояние FSM диалога
-#   _dialog_turn - один ход лестницы заказа
-#   _norm_quantity - нормализация количества
-#   _extract_qty - извлечь количество из реплики
-#   _render_state - состояние сценария для промпта
-#   lm_phrase - очеловечить черновик ответа
+#   app - FastAPI application: endpoints /ask, /ask-text, /transcript, /monitor
+#   orchestrate - полный голосовой ход: STT → FSM/LLM → 1С → TTS
 #   lm_intent - LLM-распознавание намерения
-#   build_answer - сборка текстового ответа
-#   build_stock_table - таблица остатков
-#   build_parts_table - таблица вариантов
-#   build_cart_table - таблица корзины
-#   _render_state/_extract_qty - состояние и количество
-#   lm_phrase - очеловечивание ответа
-#   _dialog_turn - ход FSM (переопределение экспорта)
+#   build_answer - сборка текстового ответа по данным 1С/mock
 #   call_stock_api - остатки через 1С/mock
 #   call_order_api - заказ товара через 1С/mock
 #   call_part_api - разовая заявка запчасти
 #   call_lookup_vehicle - шаг идентификации техники
 #   call_lookup_parts - шаг идентификации запчастей
-#   orchestrate - полный ход диалога
-#   _dialog_state - состояние FSM (доступ из orchestrate)
-#   ask/ask_text - диалоговые endpoints (audio/text)
-#   transcribe/speak - служебные endpoints
-#   health/get_metrics - health и метрики
+#   chat_history - история чата по chat_id
+#   chat_append - добавить ход в историю
+#   _norm_quantity - нормализация количества
 # END_MODULE_MAP
 
 STT_URL = os.getenv("STT_URL", "http://stt:8000")
@@ -627,9 +612,7 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
                 }
             return {
                 "found": False,
-                "message": (
-                    "Позиций в заказе пока нет. Назовите запчасть — название или артикул."
-                ),
+                "message": ("Позиций в заказе пока нет. Назовите запчасть — название или артикул."),
                 "source": "1c",
             }
         kind = _classify_utterance(text)
@@ -842,8 +825,9 @@ def extract_json(text: str) -> dict | None:
 # END_CONTRACT: lm_intent
 # START_BLOCK_LLM_INTENT
 def lm_intent(
-    text: str, history: deque | None = None, extra_system: str | None = None
-# END_BLOCK_LLM_INTENT
+    text: str,
+    history: deque | None = None,
+    extra_system: str | None = None,
 ) -> tuple[dict | None, str]:
     model = resolve_model()
     headers = {"Authorization": f"Bearer {LM_API_KEY}"}
@@ -885,6 +869,9 @@ def lm_intent(
     cost = (pt / 1e6) * LM_PRICE_PROMPT + (ct / 1e6) * LM_PRICE_COMPLETION
     metrics.record_lm(model, pt, ct, cached, lm_ms, cost)
     return extract_json(content), content
+
+
+# END_BLOCK_LLM_INTENT
 
 
 def call_stock_api(item: str, warehouse: str | None = None) -> dict:
@@ -1272,7 +1259,12 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         stock_ms = metrics.ms() - t_stock
         answer = lm_phrase(stock.get("message") or "Уточните.", _render_state(st))
         chat_append(history, text, answer)
-        dialog_trace = {"component": "VoiceGateway", "function": "_dialog_turn", "block": st["stage"].upper()}
+        dialog_trace = {
+            "component": "VoiceGateway",
+            "function": "_dialog_turn",
+            "block": "[BLOCK_DIALOG_FSM]",
+            "stage": st["stage"],
+        }
         intent = {"action": f"dialog:{st['stage']}"}
         t_tts = metrics.ms()
         tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
@@ -1417,6 +1409,9 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         "found": (stock or {}).get("found") if stock else None,
         "items": len((stock or {}).get("items", [])) if stock else 0,
         "answer_len": len(answer),
+        "component": "VoiceGateway",
+        "function": "orchestrate",
+        "block": "[BLOCK_ROUTE_INTENT]",
     }
     return tts_r.content, headers, extra
 

@@ -13,13 +13,17 @@ from pydantic import BaseModel
 #   DEPENDS: none
 #   LINKS: M-TTS, DF-VOICE-TURN
 #   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   app
-#   health
-#   tts
-#   tts_file
+#   VOICE - путь к голосовой модели Piper
+#   PIPER - путь к бинарнику piper
+#   app - FastAPI application
+#   TTSRequest - параметры синтеза
+#   health - GET /health
+#   tts - POST /tts
+#   tts_file - POST /tts-file
 # END_MODULE_MAP
 
 VOICE = os.getenv("PIPER_VOICE", "/voices/ru_RU-dmitri-medium.onnx")
@@ -91,3 +95,15 @@ def tts_file(req: TTSRequest):
         check=True,
     )
     return FileResponse(out.name, media_type="audio/wav", filename="tts.wav")
+
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "PIPER",
+    "VOICE",
+    "TTSRequest",
+    "app",
+    "health",
+    "tts",
+    "tts_file",
+]

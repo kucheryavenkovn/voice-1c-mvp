@@ -158,3 +158,14 @@ def log_line(trace: dict) -> str:
     if trace.get("component"):
         marker = f" [{trace['component']}][{trace.get('function', '?')}]{trace.get('block', '')}"
     return f"[trace]{marker} {kind} {t}{src}{found}{items}{err}"
+
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "fmt_timings",
+    "log_line",
+    "ms",
+    "record",
+    "record_lm",
+    "snapshot",
+]

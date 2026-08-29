@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  grace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install GRACE CLI (pinned)
+        run: bun install -g @osovv/grace-cli@4.0.5
+      - name: GRACE lint
+        run: grace lint --path .
+
   lint:
     runs-on: ubuntu-latest
     steps:

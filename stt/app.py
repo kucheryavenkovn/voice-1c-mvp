@@ -12,13 +12,20 @@ from pydantic import BaseModel
 #   DEPENDS: none
 #   LINKS: M-STT, DF-VOICE-TURN
 #   ROLE: RUNTIME
+#   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   app
-#   health
-#   transcribe
-#   transcriptions
+#   WHISPER_MODEL - имя модели Whisper
+#   WHISPER_LANGUAGE - язык распознавания (ru)
+#   resolve_device - выбор устройства (cuda/cpu)
+#   resolve_compute_type - выбор compute_type
+#   load_model - загрузка WhisperModel
+#   model - загруженная модель (singleton)
+#   app - FastAPI application
+#   TextOut - схема ответа распознавания
+#   health - GET /health
+#   transcribe - POST /stt и /v1/audio/transcriptions
 # END_MODULE_MAP
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
@@ -100,3 +107,18 @@ def transcribe(file: UploadFile = File(...)):
             os.unlink(tmp.name)
         except OSError:
             pass
+
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "WHISPER_LANGUAGE",
+    "WHISPER_MODEL",
+    "TextOut",
+    "app",
+    "health",
+    "load_model",
+    "model",
+    "resolve_compute_type",
+    "resolve_device",
+    "transcribe",
+]

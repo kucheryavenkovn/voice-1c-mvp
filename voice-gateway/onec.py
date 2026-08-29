@@ -26,16 +26,30 @@ import requests
 #   PURPOSE: Интеграционный адаптер к 1С через MCP Toolkit.
 #   SCOPE: stock queries, vehicle/part lookup, supply source decision, document creation.
 #   DEPENDS: M-VOICE-GATEWAY (контракт данных), 1C MCP Toolkit REST
-#   LINKS: M-1C-ADAPTER, V-M-1C-ADAPTER, DF-PART-ORDER
+#   LINKS: M-1C-ADAPTER, V-M-1C-ADAPTER, DF-PART-ORDER, DF-STOCK-QUERY
 #   ROLE: RUNTIME
 #   MAP_MODE: EXPORTS
 # END_MODULE_CONTRACT
 #
 # START_MODULE_MAP
-#   query_stock/stock_at_warehouse/stock_for_item - чтение остатков
-#   find_vehicles/find_parts - идентификация техники и номенклатуры
-#   request_part/create_order/create_repair_order - создание документов
-#   execute_code/_build_*_code - генерация и выполнение BSL
+#   ONEC_BASE_URL - базовый URL 1C MCP Toolkit REST
+#   ONEC_CHANNEL - имя канала 1С (опционально)
+#   ONEC_TIMEOUT - таймаут HTTP-вызовов, сек
+#   ONEC_ORDER_DOC_TYPE - тип документа заказа (ERP/КА/УТ)
+#   ORDER_STATUS - статус свежесозданного заказа
+#   ENGINEER_WAREHOUSE - склад инженера (кейс «запчасть для техники»)
+#   CURRENT_OP_WAREHOUSE - склад текущего ОП
+#   OTHER_OP_WAREHOUSE - склад другого ОП
+#   ping - проверка доступности 1C MCP Toolkit
+#   query_stock - остатки по товару со складами
+#   stock_at_warehouse - остатки по складу
+#   stock_for_item - остатки по номенклатуре (запросом)
+#   find_vehicles - идентификация техники
+#   find_parts - идентификация номенклатуры
+#   execute_code - выполнение BSL через /api/execute_code
+#   create_order - заказ товара у поставщика
+#   create_repair_order - заказ на ремонт + обеспечение
+#   request_part - кейс «запчасть для техники» (ветки B1–B4)
 # END_MODULE_MAP
 
 ONEC_BASE_URL = os.getenv("ONEC_BASE_URL", "http://host.docker.internal:6003/api")
@@ -508,7 +522,9 @@ def stock_for_item(item: str) -> dict:
     Один запрос: точный артикул (если токен один) или токены наименования —
     без ссылок-параметров (парсер их не переваривает)."""
     item_s = _strip_service(item)
-    wh_list = ", ".join(f'"{w}"' for w in (ENGINEER_WAREHOUSE, CURRENT_OP_WAREHOUSE, OTHER_OP_WAREHOUSE))
+    wh_list = ", ".join(
+        f'"{w}"' for w in (ENGINEER_WAREHOUSE, CURRENT_OP_WAREHOUSE, OTHER_OP_WAREHOUSE)
+    )
     art = item_s.strip()
     if art and " " not in art:
         item_cond = f'ВРЕГ(Остатки.Номенклатура.Артикул) = ВРЕГ("{art}")'
@@ -520,7 +536,9 @@ def stock_for_item(item: str) -> dict:
         "ГДЕ " + item_cond + " И Остатки.Склад.Наименование В (" + wh_list + ") "
         "СГРУППИРОВАТЬ ПО Остатки.Склад.Наименование"
     )
-    r = requests.post(_api_url("execute_query"), json={"query": q, "limit": 10}, timeout=ONEC_TIMEOUT)
+    r = requests.post(
+        _api_url("execute_query"), json={"query": q, "limit": 10}, timeout=ONEC_TIMEOUT
+    )
     r.raise_for_status()
     body = r.json()
     if not body.get("success"):
@@ -593,6 +611,14 @@ def create_repair_order(items: list, vehicle_name: str) -> dict:
             docs[k.strip()] = v.strip()
     if "repair" not in docs:
         raise RuntimeError(f"unexpected execute_code result: {data[:200]}")
+    # GRACE log-маркер: создание документов по корзине (бизнес-решение)
+    print(
+        "[OneCAdapter][create_repair_order][BLOCK_CREATE_REPAIR_ORDER] "
+        + " ".join(
+            f"{k}={docs[k]}" for k in ("repair", "cmove", "zorder", "zmove", "order") if docs.get(k)
+        ),
+        flush=True,
+    )
     return {"docs": docs, "message": _build_cart_message(norm, docs)}
 
 
@@ -934,7 +960,13 @@ def stock_at_warehouse(warehouse: str) -> dict:
         if not row or not row[0]:
             continue
         art = "" if len(row) < 2 or row[1] is None else str(row[1]).strip()
-        items.append({"name": str(row[0]).strip(), "article": art, "quantity": row[2] if len(row) > 2 else None})
+        items.append(
+            {
+                "name": str(row[0]).strip(),
+                "article": art,
+                "quantity": row[2] if len(row) > 2 else None,
+            }
+        )
     if not items:
         return {
             "found": False,
@@ -1956,6 +1988,11 @@ def request_part(item: str, vehicle: str, quantity: int) -> dict:
         "B3": [rest[0], rest[1], rest[2]],
         "B4": [rest[0]],
     }[head]
+    # GRACE log-маркер: создание документов разовой заявки (бизнес-решение)
+    print(
+        f"[OneCAdapter][request_part][BLOCK_REQUEST_PART_SINGLE] branch={head} docs={','.join(docs)}",
+        flush=True,
+    )
     return {
         "found": True,
         "vehicle": vehicle,
@@ -1966,4 +2003,27 @@ def request_part(item: str, vehicle: str, quantity: int) -> dict:
         "source": "1c",
     }
 
+
 # END_BLOCK_REQUEST_PART_SINGLE
+
+# GRACE: стабильный публичный экспорт (для точной проверки поверхности)
+__all__ = [
+    "CURRENT_OP_WAREHOUSE",
+    "ENGINEER_WAREHOUSE",
+    "ONEC_BASE_URL",
+    "ONEC_CHANNEL",
+    "ONEC_ORDER_DOC_TYPE",
+    "ONEC_TIMEOUT",
+    "ORDER_STATUS",
+    "OTHER_OP_WAREHOUSE",
+    "create_order",
+    "create_repair_order",
+    "execute_code",
+    "find_parts",
+    "find_vehicles",
+    "ping",
+    "query_stock",
+    "request_part",
+    "stock_at_warehouse",
+    "stock_for_item",
+]

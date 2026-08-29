@@ -1,0 +1,223 @@
+<GraceChangePlan graceVersion="4.0" status="applied">
+  <C-GRACE-RETROFIT>
+    <IntentSummary>
+      Завершение ретрофита GRACE 4 в voice-1c-mvp без изменения бизнес-поведения:
+      каталог .grace (context/graph/verification), семантическая разметка шести
+      runtime-модулей (MODULE_CONTRACT/MODULE_MAP/__all__, CONTRACT/BLOCK-пары),
+      runtime log-маркеры, привязанные к semantic blocks, AGENTS.md с проверенными
+      командами CLI 4.0.5, отдельный GRACE job в GitHub Actions и финальная
+      валидация (grace lint / ruff / pytest).
+    </IntentSummary>
+    <BaselineAssertions>
+      <MustExist>
+        <Value>voice-gateway/app.py</Value>
+        <Value>voice-gateway/onec.py</Value>
+        <Value>AGENTS.md</Value>
+        <Value>.github/workflows/test.yml</Value>
+      </MustExist>
+      <MustPassCommand>
+        <Command>ruff check .</Command>
+      </MustPassCommand>
+    </BaselineAssertions>
+    <TargetAssertions>
+      <MustExist>
+        <Value>M-VOICE-GATEWAY</Value>
+        <Value>M-1C-ADAPTER</Value>
+        <Value>M-OBSERVABILITY</Value>
+        <Value>M-STT</Value>
+        <Value>M-TTS</Value>
+        <Value>M-MOCK-1C</Value>
+        <Value>M-WEB-CHAT</Value>
+        <Value>M-WEB-DIAG</Value>
+        <Value>M-WEB-MONITOR</Value>
+        <Value>DF-VOICE-TURN</Value>
+        <Value>DF-PART-ORDER</Value>
+        <Value>DF-OBSERVABILITY</Value>
+        <Value>DF-STOCK-QUERY</Value>
+      </MustExist>
+      <MustVerify>
+        <Module>M-VOICE-GATEWAY</Module>
+        <Module>M-1C-ADAPTER</Module>
+        <Module>M-OBSERVABILITY</Module>
+        <Module>M-MOCK-1C</Module>
+        <Module>M-STT</Module>
+        <Module>M-TTS</Module>
+        <Module>M-WEB-CHAT</Module>
+        <Module>M-WEB-DIAG</Module>
+        <Module>M-WEB-MONITOR</Module>
+      </MustVerify>
+      <MustOwn>
+        <Owner>GD-MAIN</Owner>
+        <Anchor>M-VOICE-GATEWAY</Anchor>
+      </MustOwn>
+      <MustOwn>
+        <Owner>VD-MAIN</Owner>
+        <Anchor>V-M-1C-ADAPTER</Anchor>
+      </MustOwn>
+      <MustLink>
+        <From>M-VOICE-GATEWAY</From>
+        <To>M-1C-ADAPTER</To>
+      </MustLink>
+      <MustLink>
+        <From>DF-STOCK-QUERY</From>
+        <To>M-1C-ADAPTER</To>
+      </MustLink>
+      <MustContain>
+        <File>voice-gateway/app.py</File>
+        <Text>START_BLOCK_DIALOG_FSM</Text>
+      </MustContain>
+      <MustContain>
+        <File>voice-gateway/onec.py</File>
+        <Text>START_BLOCK_EXECUTE_1C_CODE</Text>
+      </MustContain>
+      <MustContain>
+        <File>AGENTS.md</File>
+        <Text>grace lint --path .</Text>
+      </MustContain>
+      <MustContain>
+        <File>.github/workflows/test.yml</File>
+        <Text>grace lint --path .</Text>
+      </MustContain>
+      <MustNotContain>
+        <File>AGENTS.md</File>
+        <Text>docs/*.xml</Text>
+      </MustNotContain>
+      <MustPassCommand>
+        <Command>grace lint --path .</Command>
+        <Command>ruff check .</Command>
+        <Command>ruff format --check .</Command>
+        <Command>pytest -q --ignore=tests/test_ui.py</Command>
+      </MustPassCommand>
+    </TargetAssertions>
+    <DurableScope>
+      <GD-MAIN />
+      <VD-MAIN />
+      <M-VOICE-GATEWAY />
+      <M-1C-ADAPTER />
+      <M-OBSERVABILITY />
+      <M-STT />
+      <M-TTS />
+      <M-MOCK-1C />
+      <M-WEB-CHAT />
+      <M-WEB-DIAG />
+      <M-WEB-MONITOR />
+      <DF-VOICE-TURN />
+      <DF-PART-ORDER />
+      <DF-OBSERVABILITY />
+      <DF-STOCK-QUERY />
+      <V-M-VOICE-GATEWAY />
+      <V-M-1C-ADAPTER />
+      <V-M-OBSERVABILITY />
+      <V-M-MOCK-1C />
+      <V-M-STT />
+      <V-M-TTS />
+      <V-M-WEB-CHAT />
+      <V-M-WEB-DIAG />
+      <V-M-WEB-MONITOR />
+    </DurableScope>
+    <ObservedWriteScope>
+      <File>voice-gateway/app.py</File>
+      <File>voice-gateway/onec.py</File>
+      <File>voice-gateway/metrics.py</File>
+      <File>stt/app.py</File>
+      <File>tts/app.py</File>
+      <File>mock-api/app.py</File>
+      <File>AGENTS.md</File>
+      <File>.github/workflows/test.yml</File>
+      <File>.grace/graph/main.xml</File>
+      <File>.grace/graph/index.xml</File>
+      <File>.grace/verification/main.xml</File>
+    </ObservedWriteScope>
+    <ImplementationPlan>
+      <T-001>
+        <Title>Каталог context: пять обязательных артефактов .grace/context</Title>
+        <DependsOn />
+        <AcceptanceCriteria>
+          <Criterion>requirements/technology/principles/deployment/ux-guidelines валидны для GRACE 4.0.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+        </Verification>
+      </T-001>
+      <T-002>
+        <Title>Граф: GD-MAIN с модулями M-* и потоками DF-* (включая DF-STOCK-QUERY)</Title>
+        <DependsOn>T-001</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Модули и потоки соответствуют фактическому runtime; граф индексируется без ошибок.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+          <Command>grace status --path . --with modules</Command>
+        </Verification>
+      </T-002>
+      <T-003>
+        <Title>Verification: VD-MAIN с V-M-* привязками к реальным тестам</Title>
+        <DependsOn>T-002</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Каждый Command исполняем без пояснений; требования живого окружения вынесены в Notes/Scenario.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace verification show V-M-1C-ADAPTER --path .</Command>
+        </Verification>
+      </T-003>
+      <T-004>
+        <Title>Semantic markup: MODULE_CONTRACT/MODULE_MAP/__all__ и CONTRACT/BLOCK-пары</Title>
+        <DependsOn>T-002</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>MODULE_MAP без дублей и совпадает с __all__ в шести runtime-файлах.</Criterion>
+          <Criterion>Блоки покрывают FSM, LLM intent, сборку ответа и маршрутизацию; микроблоков нет.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace file show voice-gateway/app.py --contracts --blocks</Command>
+        </Verification>
+      </T-004>
+      <T-005>
+        <Title>Runtime markers: [VoiceGateway]/[OneCAdapter] соответствуют BLOCK_*</Title>
+        <DependsOn>T-004</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Каждый ход диалога логирует маркер существующего semantic block; создание документов логируется в onec.py.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_gateway.py tests/test_onec.py</Command>
+        </Verification>
+      </T-005>
+      <T-006>
+        <Title>AGENTS.md: только проверенные команды GRACE 4.0.5 и правила агентов</Title>
+        <DependsOn>T-005</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Ни одной команды, отсутствующей в CLI 4.0.5; утверждение о docs/*.xml удалено.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace module show M-VOICE-GATEWAY --path .</Command>
+        </Verification>
+      </T-006>
+      <T-007>
+        <Title>CI: отдельный grace job с закреплённой @osovv/grace-cli@4.0.5</Title>
+        <DependsOn>T-006</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>GitHub Actions проверяет GRACE lint, Ruff lint, Ruff format и pytest на Python 3.11–3.14.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+        </Verification>
+      </T-007>
+      <T-008>
+        <Title>Валидация и архивация: терминальный статус applied у spec и plan</Title>
+        <DependsOn>
+          <Task>T-003</Task>
+          <Task>T-005</Task>
+          <Task>T-006</Task>
+          <Task>T-007</Task>
+        </DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>grace lint/ruff/pytest зелёные; бандл перенесён в .grace/changes/archive со статусом applied.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+          <Command>grace status --path .</Command>
+          <Command>pytest -q --ignore=tests/test_ui.py</Command>
+        </Verification>
+      </T-008>
+    </ImplementationPlan>
+  </C-GRACE-RETROFIT>
+</GraceChangePlan>
