@@ -1,6 +1,7 @@
 # voice-gateway — оркестратор + веб-чат
 
-Связывает STT → LM Studio → mock 1C → TTS и отдаёт голосовой веб-чат на `/`.
+Связывает STT → LLM (любой OpenAI-совместимый инференс: vLLM / LM Studio / Ollama)
+→ 1C (или mock) → TTS и отдаёт голосовой веб-чат на `/`.
 
 ## Эндпоинты
 - `GET /` — HTML голосового чата (микрофон + текстовый ввод).
@@ -19,6 +20,8 @@
 | `LM_BASE_URL` | `http://host.docker.internal:1234/v1` |
 | `LM_API_KEY` | `lm-studio` |
 | `LM_MODEL` | `auto` (берёт первую из `/v1/models`) |
+| `LM_ENABLE_THINKING` | `false` (для reasoning-моделей передаёт `chat_template_kwargs.enable_thinking`) |
+| `LM_TIMEOUT` | `120` |
 
 ## Точка интеграции с 1С
 Функция `call_stock_api(item)` — единственное место, где ходят за остатком.

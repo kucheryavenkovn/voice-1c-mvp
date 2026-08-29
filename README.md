@@ -1,11 +1,38 @@
 # voice-1c-mvp
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-05998B?logo=fastapi&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![NVIDIA CUDA](https://img.shields.io/badge/NVIDIA-CUDA%20GPU-76B900?logo=nvidia&logoColor=white)
+![STT](https://img.shields.io/badge/STT-faster--whisper-FF6F00)
+![TTS](https://img.shields.io/badge/TTS-Piper-8E24AA)
+![LLM](https://img.shields.io/badge/LLM-OpenAI--compatible-7C3AED) ![vLLM](https://img.shields.io/badge/vLLM-%3A18020-B010FB) ![LM Studio](https://img.shields.io/badge/LM_Studio-%3A1234-7C3AED) ![Ollama](https://img.shields.io/badge/Ollama-supported-FFFFFF?logo=ollama&logoColor=black)
+![1C:ERP](https://img.shields.io/badge/1C-ERP%20%2B%20MCP%20Toolkit-D52B1E)
+![PowerShell](https://img.shields.io/badge/scripts-PowerShell%207-5391FE?logo=powershell&logoColor=white)
+![pytest](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-GPLv3-blue)
+
 Голосовой MVP для интеграции с 1С: **говоришь в микрофон → распознавание речи →
 LLM понимает намерение → запрос остатков в 1С или оформление заказа → синтез речи →
 слышишь ответ**. Всё разворачивается одной командой в Docker Compose.
 
-> Цель проекта — быстро проверить связку STT + LLM (LM Studio) + 1C-API + TTS
-> на реальном железе (NVIDIA GPU) перед тем, как строить продакшен-интеграцию.
+> Цель проекта — быстро проверить связку STT + LLM + 1C-API + TTS на реальном
+> железе (NVIDIA GPU) перед тем, как строить продакшен-интеграцию. LLM — любой
+> инференс с OpenAI-совместимым API: **vLLM**, **LM Studio**, **Ollama**,
+> llama.cpp-server и т.п.
+
+## Демо
+
+**Голосовой диалог (авто-режим VAD):** вопрос остатков по молоку, затем подбор
+товаров под рецепт (морковь, яблоки, свёкла…) — полный цикл STT → LLM → 1С → TTS:
+
+![Голосовой диалог: остатки и подбор по рецепту](docs/assets/demo-voice-stock.mp4)
+
+**Заказ запчастей голосом:** «закажи три уплотнителя 77777…» → шлюз создаёт
+документ **«Заказ поставщику»** в 1С через 1C MCP Toolkit (справа видно 1С:ERP),
+затем добавляется вторая позиция заказа:
+
+![Заказ запчастей голосом с созданием документа в 1С](docs/assets/demo-order-1c.mp4)
 
 ---
 
@@ -18,18 +45,31 @@ LLM понимает намерение → запрос остатков в 1С
 | `mock-api`      | `v1c-mock-api` | 8102 | заглушка API остатков 1С                    | FastAPI, in-memory         |
 | `voice-gateway` | `v1c-gateway`  | 8103 | оркестратор + **веб-чат** (UI на `/`)       | FastAPI + статика          |
 
-**LM Studio** работает на хосте Windows на порту `1234` и отдаёт OpenAI-совместимый
-API. Контейнеры обращаются к нему через `host.docker.internal` — это и есть
-«доступ к LLM по OpenAI-совместимому API через внутреннюю подсеть Docker».
+**LLM-инференс** работает на хосте Windows и отдаёт OpenAI-совместимый API
+(`/v1/chat/completions`). Подойдёт **любой** сервер такого типа — шлюз настраивается
+через переменные `LM_BASE_URL` / `LM_API_KEY` / `LM_MODEL` в `.env`:
+
+| Инференс   | Пример `LM_BASE_URL`                      | Примечание                                    |
+|------------|-------------------------------------------|-----------------------------------------------|
+| vLLM       | `http://host.docker.internal:18020/v1`    | для reasoning-моделей задай `enable_thinking=false` |
+| LM Studio  | `http://host.docker.internal:1234/v1`     | Developer → Start Server                      |
+| Ollama     | `http://host.docker.internal:11434/v1`    | OpenAI-совместимый эндпоинт из коробки        |
+
+Контейнеры обращаются к LLM на хосте через `host.docker.internal` (в compose уже
+прописан `extra_hosts`) — это и есть «доступ к LLM по OpenAI-совместимому API
+через внутреннюю подсеть Docker». Для reasoning-моделей (Qwen3, gemma и т.п.)
+шлюз умеет отключать «размышления» через `LM_ENABLE_THINKING=false`
+(передаёт `chat_template_kwargs.enable_thinking`).
 
 ```
-                 ┌─────────────┐  host.docker.internal:1234
-  voice-gateway ─┤  LM Studio  │  (google/gemma-4-e4b)
-                 └─────────────┘
-        │
-   ┌────┼──────────────┬───────────────┐
-   ▼    ▼              ▼               ▼
-  stt  tts         mock-api(1C)    браузер (чат на /)
+                  ┌──────────────────────────┐  host.docker.internal
+   voice-gateway ─┤  LLM: vLLM / LM Studio / │  (LM_BASE_URL из .env)
+                  │      Ollama / llama.cpp  │
+                  └──────────────────────────┘
+         │
+    ┌────┼──────────────┬───────────────┐
+    ▼    ▼              ▼               ▼
+   stt  tts         mock-api(1C)    браузер (чат на /)
 ```
 
 ---
@@ -37,14 +77,17 @@ API. Контейнеры обращаются к нему через `host.dock
 ## Быстрый старт (PowerShell 7)
 
 ```powershell
-# 0. Стартуй внешние источники на хосте:
-#    - LM Studio: Developer → Start Server на :1234, загрузить модель;
+# 0. Стартуй внешний LLM-инференс и 1С на хосте:
+#    - LLM (любой OpenAI-совместимый): LM Studio → Developer → Start Server (:1234),
+#      vLLM → `vllm serve <model> --port 18020 --enable_thinking false` (или LM_ENABLE_THINKING=false),
+#      Ollama → `ollama serve` (:11434);
+#      укажи выбранный сервер в .env → LM_BASE_URL / LM_MODEL;
 #    - 1С: открой MCP_Toolkit.epf в нужной базе → «Встроенный сервер» → «Запустить сервер» (:6003).
 
 # 1. конфиг
 Copy-Item .env.example .env
 
-# 2. проверка LM Studio (хост + из контейнера + чат-тест)
+# 2. проверка LLM-сервера (хост + из контейнера + чат-тест)
 ./check-lmstudio.ps1
 
 # 3. собрать и поднять
@@ -226,9 +269,10 @@ docker compose up -d --build           # пересобрать после пр�
 
 ## Известные особенности
 
-- Модель `google/gemma-4-e4b` — **reasoning-модель** (часть токенов уходит на
-  рассуждение), поэтому в шлюзе `max_tokens=800`. Для обычных моделей (qwen/llama)
-  можно вернуть `200`.
+- **Reasoning-модели** (Qwen3, gemma, deepseek-r1 и т.п.) тратят часть токенов на
+  «размышление» — шлюз по умолчанию передаёт `chat_template_kwargs.enable_thinking=false`
+  (управляется `LM_ENABLE_THINKING`, см. «Что внутри»). Для обычных моделей менять
+  ничего не нужно.
 - Тестовые скрипты — **чистый PowerShell**, локальный Python / venv не нужны.
 - Контейнеры после `docker compose up --build <svc>` пересоздают зависимости —
   `test-pipeline.ps1` начинает с health-check и подождёт готовности STT.
