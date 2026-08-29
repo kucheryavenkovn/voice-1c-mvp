@@ -777,9 +777,9 @@ def _cart_summary(st: dict) -> str:
 # END_CONTRACT: _dialog_turn
 # START_BLOCK_DIALOG_FSM
 def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> dict:
-    """Один ход сценария (ScenarioFrame). Реплика сначала интерпретируется
-    семантически относительно frame/focus/pending, затем ScenarioManager
-    применяет typed-команды. stage не используется для понимания реплики."""
+    """Один ход сценария (ScenarioFrame). Production path: компактная проекция
+    сессии -> small LLM -> typed commands -> валидация -> ScenarioManager.
+    Детерминированный интерпретатор — fallback при недоступности/сбое LLM."""
     chat_id = st.get("_chat_id")
     session = _session(chat_id)
     manager = _scenario_manager()
@@ -790,6 +790,13 @@ def _dialog_turn(st: dict, text: str, t_short: str, qty: int, history=None) -> d
             "message": "Нет активного сценария. Скажите, что нужно.",
             "source": "1c",
         }
+
+    # production: LLM typed commands (мутации+подтверждения защищены apply_batch)
+    llm_answer = _scenario_llm_turn(session, frame, st, text, t_short, qty, history)
+    if llm_answer is not None:
+        return llm_answer
+
+    # fallback: детерминированный интерпретатор (LLM недоступен/сломан)
 
     # 0) подтверждение создания документов: только явное «да» исполняет.
     #    Любая другая реплика — обычная интерпретация данных; правка после
@@ -1418,6 +1425,340 @@ def _interpret_free(session, frame, st, text, t_short, qty, history) -> dict:
     return _resolve_part_mention(session, frame, st, core, qty, history)
 
 
+def _lm_chat_json(payload: dict) -> str:
+    """OpenAI-compatible вызов для command-generator (temperature 0).
+    Возвращает сырой контент; ошибки/таймауты — исключения (fallback наверху)."""
+    body = dict(payload)
+    body["model"] = resolve_model()
+    if not LM_ENABLE_THINKING:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    r = requests.post(
+        f"{LM_BASE_URL}/chat/completions",
+        json=body,
+        headers={"Authorization": f"Bearer {LM_API_KEY}"},
+        timeout=LM_TIMEOUT,
+    )
+    r.raise_for_status()
+    return (r.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+def _session_projection(session, st: dict) -> str:
+    """Компактная проекция сессии: активные frame + pending (для LLM)."""
+    parts = []
+    for frame in session.frames.values():
+        if frame.status in ("active", "discarding"):
+            marker = "АКТИВНЫЙ" if frame.id == session.active_frame_id else "фон"
+            parts.append(f"[{marker}] " + _scenario_manager().compact_projection(frame))
+    if not parts:
+        parts.append(_render_state(st))
+    return "\n\n".join(parts)
+
+
+def _pending_question(history) -> str | None:
+    if not history:
+        return None
+    for msg in reversed(history):
+        if msg.get("role") == "assistant":
+            return (msg.get("content") or "")[:160]
+    return None
+
+
+def _execute_stock_frame(chat_id: str, st: dict) -> dict | None:
+    """Детерминированное исполнение активного STOCK_QUERY frame (1С пишет LLM)."""
+    session = _session(chat_id)
+    frame = session.active
+    if frame is None or frame.scenario_type != "stock_query":
+        return None
+    nom = frame.fields.get("nomenclature")
+    wh = frame.fields.get("warehouse")
+    wh_name = wh.entity.name if (wh and wh.entity and wh.filled) else None
+    try:
+        if wh_name and not (nom and nom.filled):
+            res = stock_at_warehouse_view(wh_name)  # list-режим: только склад
+        elif nom and nom.filled:
+            res = onec.query_stock(nom.entity.name, wh_name)
+        else:
+            res = {"found": False, "message": "По какому товару узнать остаток?", "source": "1c"}
+    except Exception as e:
+        res = {"found": False, "message": f"Не удалось получить остаток: {e}", "source": "1c"}
+    res.setdefault(
+        "table", build_stock_table(res, "get_stock" if nom and nom.filled else "list_stock")
+    )
+    _scenario_manager().cancel_scenario(session, frame)
+    _sync_legacy_state(chat_id)
+    return res
+
+
+def _scenario_llm_turn(session, frame, st, text, t_short, qty, history) -> dict | None:
+    """Production интерпретация: проекция -> LLM -> typed commands -> apply_batch.
+
+    Возвращает None, если LLM недоступен/вернул мусор — вызывающий код
+    переходит на детерминированный fallback (никаких мутаций при этом нет)."""
+    from scenarios.llm import generate_commands
+
+    chat_id = st.get("_chat_id")
+    projection = _session_projection(session, st)
+    pending_q = _pending_question(history)
+    gen = generate_commands(
+        text,
+        projection,
+        call_llm=_lm_chat_json,
+        recent_turns=list(history)[-4:] if history else None,
+        pending_question=pending_q,
+    )
+    st["_llm_meta"] = {
+        "ok": gen.ok,
+        "attempts": gen.attempts,
+        "commands": [c.describe() for c in gen.commands],
+        "error": gen.error,
+    }
+    if gen.malformed:
+        return None  # безопасный fallback, frame не тронут
+
+    commands = gen.commands
+    # разговор/уточнение вне мутаций
+    if commands and all(c.kind == "chitchat" for c in commands):
+        ans = commands[0].answer_text
+        if not ans:
+            return None  # нет текста — пусть fallback ответит через legacy chat
+        return {"found": False, "message": ans, "source": "llm"}
+    if any(c.kind == "clarify" for c in commands):
+        ans = next((c.answer_text for c in commands if c.answer_text), None)
+        return {
+            "found": False,
+            "message": ans or "Уточните, пожалуйста: о какой части заказа речь?",
+            "source": "llm",
+        }
+
+    results = manager_batch_apply(session, commands)
+    changed = sorted({p for r in results for p in r.changed})
+    st["_llm_meta"]["applied"] = [r.status for r in results]
+    st["_llm_meta"]["changed"] = changed
+
+    # STOCK_QUERY: исполнение после успешного разрешения ссылок
+    active = session.active
+    if active is not None and active.scenario_type == "stock_query":
+        stock_res = _execute_stock_frame(chat_id, st)
+        if stock_res is not None:
+            return {
+                "found": stock_res.get("found", False),
+                "message": stock_res.get("message", ""),
+                "table": stock_res.get("table"),
+                "source": stock_res.get("source", "1c"),
+            }
+
+    added_msg = None
+    if active is not None and active.scenario_type == "repair_order":
+        added_msg = _finalize_resolved_rows(session, active, st)
+
+    return _render_scenario_results(session, st, results, qty, added_msg=added_msg)
+
+
+def manager_batch_apply(session, commands):
+    return _scenario_manager().apply_batch(session, commands)
+
+
+def _finalize_resolved_rows(session, frame, st) -> str | None:
+    """Для строк с только что разрешённой номенклатурой: рассчитать источник
+    обеспечения (1С) и вернуть сообщение «Добавил в заказ…» (или None)."""
+    added = None
+    for row in frame.collections.get("items", []):
+        nom = row.fields.get("nomenclature")
+        src = row.fields.get("supply_source")
+        if nom is None or src is None or nom.status != "resolved" or src.value:
+            continue
+        use_qty = int(row.fields["quantity"].value or 1)
+        source = _apply_row_source(session, frame, row, use_qty)
+        entity = nom.entity
+        added = (
+            f"Добавил в заказ: {entity.name} (арт. {entity.metadata.get('article', '')}) — "
+            f"{use_qty} шт, {onec._SOURCE_NAMES[source]}. "
+            "Добавить ещё позицию или сохраняем заказ?"
+        )
+        frame.focus.move(f"items[{row.item_id}].nomenclature")
+    if added:
+        _sync_legacy_state(st.get("_chat_id"))
+    return added
+
+
+def _render_scenario_results(session, st, results, qty, added_msg: str | None = None) -> dict:
+    """Детерминированный следующий шаг: ответ из итогового состояния frame."""
+    chat_id = st.get("_chat_id")
+    frame = session.active
+    if frame is None or frame.status == "cancelled":
+        _dialog_reset(st)
+        return {
+            "found": False,
+            "message": (
+                "Заказ не сохранён, корзина очищена. Я ваш складской ассистент. "
+                "Что вам сейчас нужно — заказать запчасть для техники или узнать "
+                "остаток товара на складе?"
+            ),
+            "source": "llm",
+        }
+    # подтверждение исполнено -> документы
+    if any(r.ok and r.status == "executed" for r in results):
+        r = next(r for r in results if r.status == "executed")
+        docs = dict(r.data.get("docs", {}))
+        docs.pop("frame_payload", None)
+        st["docs"] = docs
+        table = build_cart_table(st, done=True)
+        _dialog_reset(st)
+        st["docs"] = docs
+        return {"found": True, "message": r.data.get("message", ""), "table": table, "source": "1c"}
+    if any(r.status == "rejected" for r in results):
+        frame.status = "discarding"
+        _sync_legacy_state(chat_id)
+        return {
+            "found": False,
+            "message": "Хорошо. Продолжаем работать с этим заказом или не сохраняем его?",
+            "source": "1c",
+        }
+    # правки корзины
+    if added_msg:
+        return {"found": True, "message": added_msg, "table": build_cart_table(st), "source": "1c"}
+    if any(r.status == "removed" for r in results):
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": "Удалил строку. Что дальше — добавим ещё или сохраняем заказ?",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    # quantity/скаляры
+    filled = [r for r in results if r.status == "filled"]
+    if filled and not any(r.status in ("ambiguous", "not_found") for r in results):
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": f"Готово: {_cart_summary(st)}" if st["items"] else "Готово.",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    # разрешение ссылок — важнее сообщения о новой строке
+    resolution = next(
+        (r for r in results if r.status in ("ambiguous", "not_found", "resolved")), None
+    )
+    if resolution is not None:
+        _sync_legacy_state(chat_id)
+        path = resolution.changed[0] if resolution.changed else ""
+        if path == "vehicle" or path.endswith("vehicle"):
+            v = frame.fields.get("vehicle")
+            if v is not None and v.status == "ambiguous":
+                return {
+                    "found": True,
+                    "message": f"Нашёл технику: {v.candidates[0].name}. Это она?",
+                    "source": "1c",
+                }
+            if v is not None and v.status == "resolved":
+                return {
+                    "found": True,
+                    "message": f"Техника подтверждена: {v.entity.name}. Какая именно запчасть нужна?",
+                    "source": "1c",
+                }
+            return {
+                "found": False,
+                "message": "Техника в 1С не найдена — назовите другую.",
+                "source": "1c",
+            }
+        row = _focused_row(frame)
+        if row is not None:
+            nom = row.fields.get("nomenclature")
+            if nom is not None and nom.status == "ambiguous":
+                table = _parts_table_with_stock_compat(nom, st.get("vehicle"))
+                if len(nom.candidates) == 1:
+                    c = nom.candidates[0]
+                    art = c.metadata.get("article", "")
+                    msg = (
+                        f"Нашёл запчасть: {c.name}" + (f", артикул {art}" if art else "") + ". Она?"
+                    )
+                else:
+                    lst = "; ".join(
+                        c.name
+                        + (
+                            f" (арт. {c.metadata.get('article', '')})"
+                            if c.metadata.get("article")
+                            else ""
+                        )
+                        for c in nom.candidates
+                    )
+                    tail = f" для техники {st.get('vehicle')}" if st.get("vehicle") else ""
+                    msg = f"Есть варианты{tail}: {lst}. Какой нужен?"
+                return {"found": True, "message": msg, "table": table, "source": "1c"}
+            if nom is not None and nom.status == "not_found":
+                st["fails"] = st.get("fails", 0) + 1
+                mention = nom.user_mention or "товар"
+                return {
+                    "found": False,
+                    "message": (
+                        f"По '{mention}' номенклатуры в базе нет — такую запчасть "
+                        "мы не обрабатываем. Назовите артикул или другую запчасть."
+                    ),
+                    "source": "1c",
+                }
+    # явные неудачи команд — честный ответ, а не общая фраза
+    failed = next(
+        (r for r in results if not r.ok and r.message and r.status != "skipped"),
+        None,
+    )
+    if failed is not None:
+        _sync_legacy_state(chat_id)
+        return {"found": False, "message": failed.message, "source": "1c"}
+    # новая строка без упоминания товара (после проверки resolution)
+    if any(r.status == "appended" for r in results):
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": "Добавил новую строку. Какая запчасть нужна — название или артикул?",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    # подтверждение показано (propose) — сводка корзины + вопрос
+    if any(r.status == "proposed" for r in results):
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": _cart_summary(st) + " Создаём документы?",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    if frame.pending_action is not None:
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": _cart_summary(st) + " Создаём документы?",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    # schema-driven: обязательная техника не заполнена — спрашиваем её
+    vehicle = frame.fields.get("vehicle")
+    if vehicle is not None and vehicle.required and not vehicle.filled and not st["items"]:
+        _sync_legacy_state(chat_id)
+        return {
+            "found": False,
+            "message": "Для какой техники нужна запчасть? Назовите марку, модель или госномер.",
+            "source": "1c",
+        }
+    # запрос состояния / просто изменённые данные
+    if any(r.status == "query" for r in results):
+        _sync_legacy_state(chat_id)
+        return {
+            "found": True,
+            "message": _cart_summary(st)
+            if st["items"]
+            else "Заказ пока пустой. Назовите запчасть.",
+            "table": build_cart_table(st),
+            "source": "1c",
+        }
+    _sync_legacy_state(chat_id)
+    return {
+        "found": True,
+        "message": "Принято. Продолжаем: назовите запчасть или скажите «оформляй».",
+        "table": build_cart_table(st),
+        "source": "1c",
+    }
+
+
 def _run_stock_scenario(
     chat_id: str, item: str | None, warehouse: str | None, action: str | None
 ) -> dict:
@@ -1961,6 +2302,22 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
             "block": "[BLOCK_DIALOG_FSM]",
             "stage": st["stage"],
         }
+        _llm_meta = st.pop("_llm_meta", None)
+        if _llm_meta:
+            dialog_trace["llm_cmds"] = ",".join(_llm_meta.get("commands", []))[:200]
+            dialog_trace["llm_applied"] = ",".join(_llm_meta.get("applied", []))
+            dialog_trace["llm_attempts"] = _llm_meta.get("attempts")
+            if _llm_meta.get("error"):
+                dialog_trace["llm_error"] = _llm_meta["error"][:120]
+        _frame_active = _session(chat_id).active if chat_id else None
+        if _frame_active is not None:
+            dialog_trace["frame"] = (
+                f"{_frame_active.scenario_type}:{_frame_active.id}@v{_frame_active.version}"
+            )
+            if _frame_active.focus:
+                dialog_trace["focus"] = _frame_active.focus.path
+            if _llm_meta and _llm_meta.get("changed"):
+                dialog_trace["changed"] = ",".join(_llm_meta["changed"])[:200]
         intent = {"action": f"dialog:{st['stage']}"}
         t_tts = metrics.ms()
         tts_r = requests.post(f"{TTS_URL}/tts", json={"text": answer}, timeout=60)
@@ -1989,15 +2346,37 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
             },
         )
 
-    # 2) обычный NLU-путь
-    t_lm = metrics.ms()
-    intent, raw = lm_intent(text, history)
-    lm_ms = metrics.ms() - t_lm
+    # 2) production: LLM typed commands для сценариев (legacy NLU — fallback)
+    scenario_llm_trace = None
+    _scenario_llm_done = False
+    if st is not None and _session(chat_id).active is None:
+        t_cmd = metrics.ms()
+        llm_answer = _scenario_llm_turn(
+            _session(chat_id), None, st, text, t_short, st.get("qty") or 1, history
+        )
+        if llm_answer is not None:
+            _scenario_llm_done = True
+            stock = llm_answer
+            intent = {"action": f"dialog:{st['stage']}"}
+            raw = ""
+            lm_ms = metrics.ms() - t_cmd
+            stock_ms = None
+            scenario_llm_trace = st.pop("_llm_meta", None)
+
+    if not _scenario_llm_done:
+        # 2-legacy) обычный NLU-путь
+        t_lm = metrics.ms()
+        intent, raw = lm_intent(text, history)
+        lm_ms = metrics.ms() - t_lm
 
     # 2а) LLM не распознал — детерминированные триггеры намерений по словам
     # (защита от цикла «не понял — повторяю приветствие»)
     fallback_stock = None
-    if st is not None and (intent is None or (intent or {}).get("action") == "unknown"):
+    if (
+        st is not None
+        and not _scenario_llm_done
+        and (intent is None or (intent or {}).get("action") == "unknown")
+    ):
         t_low = text.lower()
         if any(k in t_low for k in ("заказ", "заказать", "закажи", "запчаст")):
             st.update({"stage": "await_vehicle", "item": None, "qty": 1})
@@ -2018,7 +2397,8 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
                 "message": "По какому товару узнать остаток? Назовите название или артикул.",
             }
 
-    stock = fallback_stock
+    if not _scenario_llm_done:
+        stock = fallback_stock
     item = (intent or {}).get("item")
     warehouse = _map_warehouse((intent or {}).get("warehouse"))
     action = (intent or {}).get("action")
@@ -2096,7 +2476,11 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         if st is not None and action in ("get_stock", "list_stock"):
             _dialog_reset(st)
 
-    answer = build_answer(text, intent, stock)
+    if _scenario_llm_done:
+        # сценарный ответ уже детерминирован рендером batch — не перефразируем
+        answer = (stock or {}).get("message") or ""
+    else:
+        answer = build_answer(text, intent, stock)
     chat_append(history, text, answer)
 
     t_tts = metrics.ms()
@@ -2131,6 +2515,17 @@ def orchestrate(text: str, chat_id: str | None = None) -> tuple[bytes, dict, dic
         "function": "orchestrate",
         "block": "[BLOCK_ROUTE_INTENT]",
     }
+    if scenario_llm_trace:
+        extra["llm_cmds"] = ",".join(scenario_llm_trace.get("commands", []))[:200]
+        extra["llm_applied"] = ",".join(scenario_llm_trace.get("applied", []))
+        extra["llm_attempts"] = scenario_llm_trace.get("attempts")
+        if scenario_llm_trace.get("changed"):
+            extra["changed"] = ",".join(scenario_llm_trace["changed"])[:200]
+        active_frame = _session(chat_id).active if chat_id else None
+        if active_frame is not None:
+            extra["frame"] = (
+                f"{active_frame.scenario_type}:{active_frame.id}@v{active_frame.version}"
+            )
     return tts_r.content, headers, extra
 
 

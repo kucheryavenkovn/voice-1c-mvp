@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .commands import Command
+from .commands import CONTRADICTORY_WITH_CONFIRM, MUTATING_KINDS, Command
 from .models import (
     CollectionItem,
     FieldKind,
@@ -121,11 +121,65 @@ class ScenarioManager:
             "remove_collection_item": self._cmd_remove_item,
             "switch_focus": self._cmd_switch_focus,
             "query_scenario": self._cmd_query,
+            "propose_pending": self._cmd_propose,
             "confirm_pending": self._cmd_confirm,
             "reject_pending": self._cmd_reject,
             "cancel_scenario": self._cmd_cancel,
+            # chitchat/clarify не мутируют frame — их обрабатывает оркестратор
+            "chitchat": self._cmd_noop,
+            "clarify": self._cmd_noop,
         }[cmd.kind]
         return handler(session, cmd)
+
+    def _cmd_noop(self, session: ScenarioSession, cmd: Command) -> CommandResult:
+        return CommandResult(ok=True, status=cmd.kind, message=cmd.answer_text or "")
+
+    def apply_batch(self, session: ScenarioSession, commands: list[Command]) -> list[CommandResult]:
+        """Транзакционное применение команд одной реплики.
+
+        Правила безопасности:
+        - batch, содержащий ОДНОВРЕМЕННО мутации/propose и confirm_pending,
+          отклоняется целиком (лучше отказаться, чем создать неверный документ);
+        - если в batch есть мутации, старый PendingAction инвалидируется
+          до применения первой мутации;
+        - при остановке на resolution/clarification (ambiguous/not_found)
+          последующие entity-мутации и confirm пропускаются, скалярные
+          set'ы применяются (количество к новой строке — безопасно).
+        """
+        kinds = [c.kind for c in commands]
+        if "confirm_pending" in kinds and any(k in CONTRADICTORY_WITH_CONFIRM for k in kinds):
+            return [
+                CommandResult(
+                    ok=False,
+                    status="contradictory_batch",
+                    message="нельзя одновременно менять данные и подтверждать создание",
+                )
+            ]
+        if any(k in MUTATING_KINDS for k in kinds):
+            frame = session.active
+            if frame is not None and frame.pending_action is not None:
+                frame.pending_action = None
+                frame.bump()
+        results: list[CommandResult] = []
+        awaiting_resolution = False
+        for cmd in commands:
+            entity_set = cmd.kind in ("set_field", "set_collection_field") and bool(cmd.mention)
+            if awaiting_resolution and (entity_set or cmd.kind == "confirm_pending"):
+                results.append(
+                    CommandResult(
+                        ok=False,
+                        status="skipped",
+                        message=f"пропущено: ожидается разрешение предыдущего упоминания ({cmd.describe()})",
+                    )
+                )
+                continue
+            result = self.apply(session, cmd)
+            results.append(result)
+            if result.needs_resolution:
+                awaiting_resolution = True
+            if not result.ok and result.status in ("contradictory_batch",):
+                break
+        return results
 
     def _cmd_start(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self.start_scenario(session, cmd.scenario_type or "stock_query")
@@ -177,8 +231,14 @@ class ScenarioManager:
         """Новая строка коллекции. НИКАКОГО поиска номенклатуры здесь нет."""
         frame = self._require_frame(session)
         defn = self.registry.get(frame.scenario_type)
-        col_name = cmd.path or (next(iter(defn.collections)) if defn.collections else "items")
-        col_spec = defn.collections[col_name]
+        col_name = (
+            cmd.collection
+            or (cmd.path or "").split("[", 1)[0]
+            or (next(iter(defn.collections)) if defn.collections else "items")
+        )
+        col_spec = defn.collections.get(col_name)
+        if col_spec is None:
+            return CommandResult(ok=False, status="invalid", message=f"нет коллекции {col_name!r}")
         fields = {
             fname: ScenarioField(
                 name=fname,
@@ -213,10 +273,11 @@ class ScenarioManager:
 
     def _cmd_select_item(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self._require_frame(session)
-        item = self._item_by_ref(frame, cmd.path, cmd.item_ref)
+        collection = cmd.collection or (cmd.path or "").split("[", 1)[0] or "items"
+        item = self._item_by_ref(frame, collection, cmd.item_ref)
         if item is None:
             return CommandResult(ok=False, status="invalid", message="строка не найдена")
-        target = f"{cmd.path}[{item.item_id}]"
+        target = f"{collection}[{item.item_id}]"
         frame.focus.move(target)
         return CommandResult(
             ok=True, status="focused", focus=target, data={"item_id": item.item_id}
@@ -224,26 +285,31 @@ class ScenarioManager:
 
     def _cmd_set_collection_field(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self._require_frame(session)
-        item = self._item_by_ref(frame, cmd.path, cmd.item_ref)
+        collection = cmd.collection or (cmd.path or "").split("[", 1)[0] or "items"
+        field_name = cmd.field or cmd.focus or cmd.path
+        item = self._item_by_ref(frame, collection, cmd.item_ref)
         if item is None:
             return CommandResult(ok=False, status="invalid", message="строка не найдена")
-        field_path = f"{cmd.path}[{item.item_id}].{cmd.focus}"
+        if not field_name:
+            return CommandResult(ok=False, status="invalid", message="не указано поле строки")
+        field_path = f"{collection}[{item.item_id}].{field_name}"
         sub = Command(kind="set_field", path=field_path, mention=cmd.mention, value=cmd.value)
         return self._cmd_set_field(session, sub)
 
     def _cmd_remove_item(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self._require_frame(session)
-        item = self._item_by_ref(frame, cmd.path, cmd.item_ref)
+        collection = cmd.collection or (cmd.path or "").split("[", 1)[0] or "items"
+        item = self._item_by_ref(frame, collection, cmd.item_ref)
         if item is None:
             return CommandResult(ok=False, status="invalid", message="строка не найдена")
-        frame.remove_item(cmd.path, item.item_id)
-        if frame.focus and frame.focus.path.startswith(f"{cmd.path}[{item.item_id}]"):
+        frame.remove_item(collection, item.item_id)
+        if frame.focus and frame.focus.path.startswith(f"{collection}[{item.item_id}]"):
             self._move_focus_to_first_unresolved(frame)
-        self._after_mutation(frame, f"{cmd.path}[{item.item_id}]")
+        self._after_mutation(frame, f"{collection}[{item.item_id}]")
         return CommandResult(
             ok=True,
             status="removed",
-            changed=[f"{cmd.path}[{item.item_id}]"],
+            changed=[f"{collection}[{item.item_id}]"],
             focus=self._focus_path(frame),
             data={"item_id": item.item_id},
         )
@@ -251,7 +317,11 @@ class ScenarioManager:
     def _cmd_switch_focus(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self._require_frame(session)
         target = cmd.focus or cmd.path or ""
-        if target in ("back", "назад") and frame.focus.history:
+        if cmd.collection or cmd.item_ref:
+            collection = cmd.collection or "items"
+            item = self._item_by_ref(frame, collection, cmd.item_ref)
+            target = f"{collection}[{item.item_id}]" if item else target
+        if target in ("back", "назад", "prev", "previous") and frame.focus.history:
             target = frame.focus.history[-1]
         frame.focus.move(target)
         return CommandResult(ok=True, status="focused", focus=frame.focus.path)
@@ -265,8 +335,29 @@ class ScenarioManager:
             data={"projection": self.compact_projection(frame)},
         )
 
+    def _cmd_propose(self, session: ScenarioSession, cmd: Command) -> CommandResult:
+        """Готов оформить документы: проверка готовности + показ подтверждения."""
+        frame = self._require_frame(session)
+        unresolved = frame.unresolved_required()
+        if unresolved:
+            return CommandResult(
+                ok=False,
+                status="incomplete",
+                message=f"не заполнено: {', '.join(unresolved)}",
+            )
+        self.propose_pending_action(frame, "create_repair_documents", payload={"source": "llm"})
+        return CommandResult(ok=True, status="proposed", focus=self._focus_path(frame))
+
     def _cmd_confirm(self, session: ScenarioSession, cmd: Command) -> CommandResult:
         frame = self._require_frame(session)
+        # подтверждение разрешения ссылки (ambiguous): «да»/выбор кандидата
+        if frame.pending_action is None and frame.pending_resolution:
+            path = frame.pending_resolution
+            try:
+                index = int(cmd.value) if cmd.value is not None else 0
+            except (TypeError, ValueError):
+                index = 0
+            return self.confirm_resolution(frame, path, index)
         pending = frame.pending_action
         if pending is None:
             return CommandResult(
@@ -419,12 +510,30 @@ class ScenarioManager:
         items = frame.collections.get(collection or "items", [])
         if not items:
             return None
-        ref = (item_ref or "").strip()
-        if not ref:
-            # без явной ссылки — строка в фокусе, иначе последняя
+        ref = (item_ref or "").strip().lower()
+        if not ref or ref in ("new", "новая", "новый"):
+            # 'new' — строка, добавленная последней в этом batch
+            if ref:
+                return items[-1]
             if frame.focus and frame.focus.path.startswith(f"{collection}["):
                 item_id = frame.focus.path.split("[", 1)[1].split("]", 1)[0]
                 return next((it for it in items if it.item_id == item_id), None)
+            return items[-1]
+        if ref in ("this", "эта", "этот", "текущая", "там"):
+            return self._focused_item(frame, collection)
+        if ref in ("prev", "previous", "предыдущая", "предыдущий", "прошлая"):
+            # последняя запись focus-истории, указывающая на другую строку
+            if frame.focus is not None:
+                for hist in reversed(frame.focus.history):
+                    if hist.startswith(f"{collection}["):
+                        hid = hist.split("[", 1)[1].split("]", 1)[0]
+                        found = next((it for it in items if it.item_id == hid), None)
+                        if found is not None:
+                            return found
+            focused = self._focused_item(frame, collection)
+            if focused is not None:
+                idx = items.index(focused)
+                return items[idx - 1] if idx > 0 else None
             return items[-1]
         if ref == "first":
             return items[0]
@@ -434,6 +543,17 @@ class ScenarioManager:
             n = int(ref)
             return items[n - 1] if 1 <= n <= len(items) else None
         return next((it for it in items if it.item_id == ref), None)
+
+    def _focused_item(self, frame: ScenarioFrame, collection: str) -> CollectionItem | None:
+        if frame.focus is None:
+            return None
+        path = frame.focus.path
+        if not path.startswith(f"{collection}["):
+            return None
+        item_id = path.split("[", 1)[1].split("]", 1)[0]
+        return next(
+            (it for it in frame.collections.get(collection, []) if it.item_id == item_id), None
+        )
 
     def _move_focus_to_first_unresolved(self, frame: ScenarioFrame) -> None:
         for name, f in frame.fields.items():

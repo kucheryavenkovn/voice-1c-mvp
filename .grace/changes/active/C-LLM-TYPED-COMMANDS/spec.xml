@@ -1,0 +1,56 @@
+<GraceChangeSpec graceVersion="4.0" status="approved">
+  <C-LLM-TYPED-COMMANDS>
+    <Name>C-LLM-TYPED-COMMANDS</Name>
+    <Summary>
+      Подключение production LLM к typed-командам ScenarioFrame: command-generator
+      prompt с компактной проекцией сессии (вместо legacy action-промпта), закрытый
+      vocabulary команд (включая chitchat/clarify), несколько команд из одной реплики
+      как транзакция, рабочие focus/focus_stack, structured output c Pydantic-
+      валидацией и одним повтором, детерминированный интерпретатор — только как
+      fallback. LLM не разрешает EntityRef и не управляет бизнес-логикой.
+    </Summary>
+    <Goals>
+      <Goal>Каждый содержательный ход с chat_id: проекция сессии -> small LLM -> typed commands[] -> валидация -> ScenarioManager.</Goal>
+      <Goal>Legacy action-промпт (get_stock/request_part/...) выведен из production path для сценарных ходов.</Goal>
+      <Goal>Несколько команд из одной реплики применяются как одна транзакция; stop-on-clarification.</Goal>
+      <Goal>Focus/focus_stack разрешают «вторая строка», «предыдущая», «эта», «там» в stable item_id до мутации.</Goal>
+      <Goal>PendingAction: batch с мутацией данных инвалидирует подтверждение до apply; confirm_pending только по актуальной версии.</Goal>
+      <Goal>Parallel STOCK_QUERY через typed-команды без разрушения REPAIR_ORDER; _looks_stock_query — только fallback.</Goal>
+    </Goals>
+    <Constraints>
+      <Constraint>Модель независимо от вендора (OpenAI-compatible); temperature 0; enable_thinking=false где поддерживается.</Constraint>
+      <Constraint>Malformed output не мутирует frame и не пишет в 1С; максимум один повтор, затем clarify.</Constraint>
+      <Constraint>Deterministic interpreter остаётся fallback без права dangerous write.</Constraint>
+      <Constraint>Compatibility stage и существующие API не удаляются.</Constraint>
+    </Constraints>
+    <NonGoals>
+      <NonGoal>Переписывание BSL НайтиПоНаименованию() на EntityRef (будущий C-1C-ENTITY-IDENTITY).</NonGoal>
+      <NonGoal>Архивация C-SCENARIO-FRAMES до live validation.</NonGoal>
+      <NonGoal>Rasa/новые зависимости; новый FSM; большие regex-словари.</NonGoal>
+    </NonGoals>
+    <AcceptanceCriteria>
+      <Criterion>LLM возвращает только закрытый набор typed-команд; legacy actions в сценарном пути не используются.</Criterion>
+      <Criterion>«Добавь ещё масляный фильтр, две штуки» -> batch [append_item, set nomenclature(mention), set quantity=2] применяется транзакционно.</Criterion>
+      <Criterion>Пользовательские позиционные/местоименные ссылки разрешаются в item_id через focus/focus_history.</Criterion>
+      <Criterion>«да, только количество сделай три» не создаёт документы по старому PendingAction.</Criterion>
+      <Criterion>Malformed LLM output безопасен: без мутаций, без 1С write, один повтор, затем clarify.</Criterion>
+      <Criterion>Трейсы: projection/llm_commands/validation/apply/resolution/next_action без секретов и reasoning.</Criterion>
+      <Criterion>grace lint / ruff / pytest (включая новые phrase-level тесты с fake LLM) — зелёные.</Criterion>
+    </AcceptanceCriteria>
+    <VerificationIntent>
+      <Item>tests/test_llm_commands.py — phrase-level regression всех классов с deterministic fake LLM.</Item>
+      <Item>tests/test_scenario_gateway.py — существующие кейсы не регрессируют.</Item>
+      <Item>grace lint --path . — целостность.</Item>
+    </VerificationIntent>
+    <AffectedAreas>
+      <Area>.grace/</Area>
+      <Area>voice-gateway/scenarios/commands.py</Area>
+      <Area>voice-gateway/scenarios/manager.py</Area>
+      <Area>voice-gateway/scenarios/llm.py</Area>
+      <Area>voice-gateway/app.py</Area>
+      <Area>voice-gateway/metrics.py</Area>
+      <Area>tests/</Area>
+      <Area>docs/ARCHITECTURE.md</Area>
+    </AffectedAreas>
+  </C-LLM-TYPED-COMMANDS>
+</GraceChangeSpec>

@@ -1,0 +1,137 @@
+<GraceChangePlan graceVersion="4.0" status="approved">
+  <C-LLM-TYPED-COMMANDS>
+    <IntentSummary>
+      Вывести legacy action-промпт из сценарного production path: LLM получает
+      компактную проекцию сессии и возвращает закрытый набор typed-команд
+      (включая chitchat/clarify); транзакционное применение batch, focus_stack,
+      защита PendingAction, structured output с одним повтором, детерминированный
+      fallback. BSL-идентичность 1С — вне скоупа.
+    </IntentSummary>
+    <BaselineAssertions>
+      <MustExist>
+        <Value>voice-gateway/scenarios/manager.py</Value>
+        <Value>voice-gateway/scenarios/commands.py</Value>
+        <Value>tests/test_scenarios.py</Value>
+        <Value>tests/test_scenario_gateway.py</Value>
+        <Value>M-SCENARIO-MANAGER</Value>
+        <Value>M-COMMAND-INTERPRETER</Value>
+      </MustExist>
+      <MustPassCommand>
+        <Command>grace lint --path .</Command>
+        <Command>ruff check .</Command>
+        <Command>pytest -q --ignore=tests/test_ui.py</Command>
+      </MustPassCommand>
+    </BaselineAssertions>
+    <TargetAssertions>
+      <MustExist>
+        <Value>voice-gateway/scenarios/llm.py</Value>
+        <Value>tests/test_llm_commands.py</Value>
+      </MustExist>
+      <MustContain>
+        <File>voice-gateway/scenarios/llm.py</File>
+        <Text>COMMAND_SYSTEM_PROMPT</Text>
+      </MustContain>
+      <MustContain>
+        <File>voice-gateway/scenarios/commands.py</File>
+        <Text>chitchat</Text>
+      </MustContain>
+      <MustVerify>
+        <Module>M-COMMAND-INTERPRETER</Module>
+        <Module>M-SCENARIO-MANAGER</Module>
+      </MustVerify>
+      <MustPassCommand>
+        <Command>grace lint --path .</Command>
+        <Command>ruff check .</Command>
+        <Command>ruff format --check .</Command>
+        <Command>pytest -q tests/test_llm_commands.py</Command>
+        <Command>pytest -q --ignore=tests/test_ui.py</Command>
+      </MustPassCommand>
+    </TargetAssertions>
+    <DurableScope>
+      <GD-MAIN />
+      <VD-MAIN />
+      <M-COMMAND-INTERPRETER />
+      <M-SCENARIO-MANAGER />
+      <M-ENTITY-RESOLVER />
+      <DF-SCENARIO-COMMAND />
+      <V-M-COMMAND-INTERPRETER />
+      <V-M-SCENARIO-MANAGER />
+    </DurableScope>
+    <ObservedWriteScope>
+      <File>voice-gateway/scenarios/commands.py</File>
+      <File>voice-gateway/scenarios/manager.py</File>
+      <File>voice-gateway/scenarios/llm.py</File>
+      <File>voice-gateway/app.py</File>
+      <File>voice-gateway/metrics.py</File>
+      <File>tests/test_llm_commands.py</File>
+      <File>docs/ARCHITECTURE.md</File>
+      <File>.grace/verification/main.xml</File>
+    </ObservedWriteScope>
+    <ImplementationPlan>
+      <T-001>
+        <Title>Vocabulary: chitchat/clarify, явные collection/field, batch-семантика</Title>
+        <DependsOn />
+        <AcceptanceCriteria>
+          <Criterion>Command остаётся закрытым контрактом; новые kind и поля валидируются Pydantic.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_llm_commands.py</Command>
+        </Verification>
+      </T-001>
+      <T-002>
+        <Title>Command-generator prompt + structured output + retry(1)</Title>
+        <DependsOn>T-001</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Проекция сессии + допустимые команды -> temperature 0 -> JSON -> Pydantic; malformed безопасен.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_llm_commands.py</Command>
+        </Verification>
+      </T-002>
+      <T-003>
+        <Title>Транзакционный apply_batch: stop-on-clarification, invalidation PendingAction</Title>
+        <DependsOn>T-001</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Мутация в batch инвалидирует PendingAction до apply; confirm после мутации невозможен.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_llm_commands.py</Command>
+        </Verification>
+      </T-003>
+      <T-004>
+        <Title>Focus/focus_stack: местоимения и позиции -> stable item_id</Title>
+        <DependsOn>T-003</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>«вторая строка», «предыдущая», «эта», «там» разрешаются до мутации frame.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q tests/test_llm_commands.py</Command>
+        </Verification>
+      </T-004>
+      <T-005>
+        <Title>Production path в app.py + observability stages + deterministic fallback</Title>
+        <DependsOn>
+          <Task>T-002</Task>
+          <Task>T-004</Task>
+        </DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Сценарные ходы идут через LLM typed commands; legacy heuristics только fallback; трейсы без секретов.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>pytest -q --ignore=tests/test_ui.py</Command>
+        </Verification>
+      </T-005>
+      <T-006>
+        <Title>Phrase-level regression + GRACE verification/docs</Title>
+        <DependsOn>T-005</DependsOn>
+        <AcceptanceCriteria>
+          <Criterion>Все классы реплик из спека покрыты; grace lint/ruff/pytest зелёные.</Criterion>
+        </AcceptanceCriteria>
+        <Verification>
+          <Command>grace lint --path .</Command>
+          <Command>pytest -q tests/test_llm_commands.py</Command>
+        </Verification>
+      </T-006>
+    </ImplementationPlan>
+  </C-LLM-TYPED-COMMANDS>
+</GraceChangePlan>

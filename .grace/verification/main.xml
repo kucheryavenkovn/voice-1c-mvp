@@ -118,10 +118,13 @@
     <V-M-COMMAND-INTERPRETER>
       <TestFiles>
         <File>tests/test_scenario_gateway.py</File>
+        <File>tests/test_llm_commands.py</File>
       </TestFiles>
-      <Command>pytest -q tests/test_scenario_gateway.py</Command>
+      <Command>pytest -q tests/test_scenario_gateway.py tests/test_llm_commands.py</Command>
       <Scenario>«Добавь строку» и адресные правки строк не интерпретируются как поиск номенклатуры.</Scenario>
-      <Scenario>Параллельный STOCK_QUERY не разрушает активный REPAIR_ORDER; correction-реплика не создаёт документы в 1С.</Scenario>
+      <Scenario>LLM возвращает закрытый набор typed-команд по проекции сессии; malformed output не мутирует frame и не пишет в 1С (один повтор, затем fallback).</Scenario>
+      <Scenario>Batch с мутацией и confirm_pending отклоняется; мутация после показа подтверждения инвалидирует PendingAction.</Scenario>
+      <Scenario>Параллельный STOCK_QUERY не разрушает активный REPAIR_ORDER; chitchat/clarify не мутируют frame.</Scenario>
     </V-M-COMMAND-INTERPRETER>
 </VD-MAIN>
 </GraceVerificationDocument>

@@ -1,5 +1,34 @@
 # Архитектура
 
+## NLU: LLM typed commands (с C-LLM-TYPED-COMMANDS)
+
+Production-путь интерпретации реплики (при chat_id):
+
+```text
+реплика
+  ↓ компактная проекция ScenarioSession (scenarios/projection.py)
+  ↓ command-generator prompt (scenarios/llm.py, temperature 0, json mode)
+  ↓ {"commands": [...]} — закрытый набор typed-команд
+  ↓ Pydantic-валидация (parse_commands; malformed → 1 повтор → deterministic fallback)
+  ↓ ScenarioManager.apply_batch (транзакция; stop на resolution/clarification)
+  ↓ EntityResolver → 1С (только резолвер заполняет ссылочные поля)
+  ↓ детерминированный следующий шаг (вопрос/подтверждение/документы)
+```
+
+Инвариант: **LLM предлагает typed-семантические операции; ScenarioManager
+валидирует и применяет их; ScenarioFrame остаётся источником истины.**
+
+- LLM не знает про `stage/await_*` (это compat-детали), не выдумывает
+  EntityRef и не исполняет 1С.
+- Несколько команд из одной реплики («добавь масляный фильтр, две штуки»)
+  применяются одним batch; мутация в batch инвалидирует PendingAction,
+  propose+confirm в одном batch запрещены.
+- Focus/focus_history разрешают «вторая строка», «предыдущая», «эта», «там»
+  в стабильный `item_id` до мутации.
+- Детерминированный интерпретатор (`_interpret_free`) остаётся fallback при
+  недоступности/сбое LLM; legacy `lm_intent`-промпт используется только вне
+  сценарного пути (order_part, анонимные запросы).
+
 ## Архитектура диалога: ScenarioFrame (с C-SCENARIO-FRAMES)
 
 Бизнес-состояние диалога — персистентный **ScenarioFrame** на бэкенде

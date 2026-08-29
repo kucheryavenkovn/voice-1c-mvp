@@ -186,7 +186,9 @@ def test_chat_history_trimmed_to_limit(gw):
 
 
 def test_clarify_answer(gw):
-    gw.lm_raw = json.dumps({"action": "clarify", "question": "Для какой техники нужна запчасть?"})
+    gw.lm_raw = json.dumps(
+        {"commands": [{"kind": "clarify", "answer_text": "Для какой техники нужна запчасть?"}]}
+    )
     r = gw.client.post("/ask-text", json={"text": "нужен диск", "chat_id": "t3"})
     assert r.status_code == 200
     ans = unquote(r.headers["X-Answer"])
