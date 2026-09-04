@@ -1,0 +1,2 @@
+# Bash-скрипты обязаны иметь LF даже при core.autocrlf=true (иначе ломаются на Linux)
+*.sh text eol=lf

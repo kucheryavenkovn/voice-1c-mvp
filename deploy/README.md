@@ -3,6 +3,16 @@
 Образы публикует CI (`.github/workflows/publish.yaml`) при каждом пуше в `master`:
 `ghcr.io/kucheryavenkovn/voice-1c-mvp/{stt,tts,mock-api,gateway}`
 
+## Альтернатива без GHCR: offline-бандл
+
+Если тянуть из реестра нельзя — собери переносимый бандл на машине с образами
+(Windows: `pwsh scripts/deploy/make-bundle.ps1 -Build -Zip [-SplitGB 3]`).
+Получится каталог/zip с images.tar, CPU-compose, .env.example и установщиками
+`install.sh` (Ubuntu) / `install.ps1` (Windows). Установка на целевой машине:
+`chmod +x install.sh && ./install.sh` — сам загрузит образы, спросит адреса
+LLM/1С и запустит стек. Подробности — в BUNDLE-README.txt внутри бандла.
+
+
 ## Первый запуск на сервере
 
 ```bash
