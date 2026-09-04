@@ -279,6 +279,21 @@ docker compose up -d --build           # пересобрать после пр�
 
 ---
 
+## Roadmap
+
+- **STT: GigaAM v3 (CTC-голова, ONNX int8)** как альтернатива faster-whisper
+  для CPU-контуров — заметно точнее на русском (Golos: ~2–3% WER против
+  ~7–8% у whisper-small), легче (~124M параметров против 244M) и быстрее
+  на CPU, а CTC не «галлюцинирует» на коротких командах. План:
+  `STT_BACKEND=gigaam`. Нюансы: экспорт ONNX + свой log-mel frontend;
+  лицензия моделей — Salute (внутренний MVP ок, для продукта проверить).
+- **stt: cpu/gpu-сплит requirements** — на CPU-машинах nvidia-колёса
+  (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, ~1.3 ГБ) сейчас вырезаются
+  вручную (`sed -i '/^nvidia-/d' stt/requirements.txt`), оформить
+  build-аргументом `STT_GPU=true|false`.
+
+---
+
 ## Лицензия
 
 Код этого репозитория распространяется под **GNU GPL v3** — см. [LICENSE](LICENSE).

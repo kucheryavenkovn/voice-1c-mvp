@@ -22,6 +22,12 @@ CUDA-библиотеки тянутся через pip (`nvidia-cublas-cu12`, `
 
 Модель (`medium`, ~1.5 ГБ) скачивается с Hugging Face при первом старте.
 
+## Roadmap
+Альтернатива для CPU-контуров — **GigaAM v3** (Sber, CTC-голова, ONNX int8):
+точнее whisper-small на русском (Golos ~2–3% против ~7–8% WER), легче
+(~124M параметров) и быстрее на CPU. Сценарий переключения — `STT_BACKEND=gigaam`
+(см. Roadmap в корневом README; там же — cpu/gpu-сплит nvidia-зависимостей).
+
 ## Пересобрать
 ```powershell
 docker compose up -d --build stt
